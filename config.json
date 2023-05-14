@@ -1,0 +1,31 @@
+{
+  "node": {
+    "name": "Test-pc",
+    "place": "Home",
+    "description": "Delete files from Temp directory"
+  },
+  "settings": [
+    {
+      "period": 15,
+      "port":5555
+    }
+  ],
+  "endpoints": [
+    {
+      "name": "Temp",
+      "path": "C:\\Temp\\",
+      "count": 10,
+      "enabled":true
+    },
+    {
+      "name": "Temp1",
+      "path": "C:\\Temp1\\",
+      "count": 10,
+      "enabled":true,
+      "filter":[
+        "folder",
+        "file.txt"
+      ]
+    }
+  ]
+}
