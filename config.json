@@ -7,7 +7,7 @@
   "settings": [
     {
       "period": 15,
-      "port":5555
+      "port":8000
     }
   ],
   "endpoints": [
