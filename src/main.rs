@@ -12,6 +12,7 @@ use std::time::Duration;
 
 
 const APP_VERSION: f64 = 0.1;
+static mut NODE_NAME: Option<String> = None;
 
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
@@ -45,16 +46,19 @@ async fn log() -> HttpResponse {
 
 #[get("/")]
 async fn index() -> HttpResponse {
+    let node_name = unsafe { NODE_NAME.clone() }.expect("NODE_NAME is not set");
 
     let html = format!(
         r#"<html>
         <h1>Welcome to bc-np {}</h1>
+        <div><h2>Node: {}</h2></div>
         <ul>
             <li><a href="/log">View Log File</a></li>
             <li><a href="/config">View Config File</a></li>
         </ul>
         </html>"#,
-        APP_VERSION
+        APP_VERSION,
+        node_name
     );
 
     HttpResponse::Ok().content_type("text/html").body(html)
@@ -65,6 +69,10 @@ async fn main() -> std::io::Result<()> {
     let config = fs::read_to_string("config.json").expect("Unable to read config");
     let config_json: serde_json::Value =
         serde_json::from_str(&config).expect("Invalid JSON format");
+        let node_name = config_json["node"]["name"].as_str().unwrap().to_string();
+        unsafe {
+            NODE_NAME = Some(node_name);
+        }
 
     let port = config_json["settings"][0]["port"].as_u64().unwrap_or(8000);
     // Start the config job in a new thread
