@@ -4,6 +4,7 @@ App to Clean Backups
 This program was written in whole or in part with ChatGPT. If you need to increase the code and add new features, you are always welcome.
 
 Before running the program, modify the config.json file to suit your needs:
+
 period - time in seconds after which the deletion will be repeated
 
 port - the port on which the http server is started
