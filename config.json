@@ -15,13 +15,13 @@
       "name": "Temp",
       "path": "C:\\Temp\\",
       "count": 10,
-      "enabled":true
+      "enabled":false
     },
     {
       "name": "Temp1",
       "path": "C:\\Temp1\\",
       "count": 10,
-      "enabled":true,
+      "enabled":false,
       "filter":[
         "folder",
         "file.txt"

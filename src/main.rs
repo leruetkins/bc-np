@@ -20,7 +20,8 @@ use std::os::windows::ffi::OsStrExt;
 
 
 use actix_web::{get, HttpResponse, Result, App, HttpServer};
-use serde::{Deserialize, Serialize};
+use serde::{Serialize};
+
 
 #[derive(Serialize)]
 struct Config {
@@ -350,7 +351,7 @@ fn run_config_job() {
     std::thread::sleep(Duration::from_secs(5));
 
     loop {
-
+        let mut enabled_count = 0;
         for endpoint in config_json["endpoints"].as_array().unwrap() {
             let name = endpoint["name"].as_str().unwrap();
             let path = endpoint["path"].as_str().unwrap();
@@ -364,7 +365,9 @@ fn run_config_job() {
                 .filter(|mask| !mask.is_empty())
                 .collect();
 
+            
             if is_enabled {
+                enabled_count += 1;
                 let files = match fs::read_dir(path) {
                     Ok(dir) => dir,
                     Err(_) => {
@@ -430,14 +433,17 @@ Total space: {whole_space_str}
 "#,
                 filter);
                 }
-                write_to_log_file(&message);
+                match write_to_log_file(&message) {
+                    Ok(_) => {}, 
+                    Err(err) => eprintln!("Ошибка при записи в лог-файл: {:?}", err),
+                }
                 println!("{}", message);
             }
+        }
+        if enabled_count ==0 {
+        println!("There are no activated endpoints. Turn on at least one and restart app.");
+        break
         }
         std::thread::sleep(Duration::from_secs(period));
     }
 }
-
-
-
-
