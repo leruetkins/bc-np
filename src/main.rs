@@ -307,21 +307,21 @@ fn delete_old_files(
     }
 
     let message = format!(
-        r#"
-        ====================================
-        {timestamp}
-        ====================================
-        Endpoint: {name}
-        Path: {path}
-        Max count: {max_count}
-        Filter: {:?}
-        Deleted {deleted_files} files{}
-        Deleted {deleted_folders} folders{}
-        Remaining files: {num_files}
-        Remaining folders: {num_dirs}
-        Free space: {free_space_str} ({space_percent}%)
-        Total space: {whole_space_str}
-        "#,
+r#"
+====================================
+{timestamp}
+====================================
+Endpoint: {name}
+Path: {path}
+Max count: {max_count}
+Filter: {:?}
+Deleted {deleted_files} files{}
+Deleted {deleted_folders} folders{}
+Remaining files: {num_files}
+Remaining folders: {num_dirs}
+Free space: {free_space_str} ({space_percent}%)
+Total space: {whole_space_str}
+"#,
         filter,
         if deleted_files == 0 {
             "".to_string()
@@ -421,18 +421,18 @@ fn run_config_job() {
                     space_percent = (free_space_gb as f64 / whole_space_gb as f64 * 100.0).round();
                     let timestamp = Local::now().format("%d-%m-%Y %H:%M:%S").to_string();
                     message = format!(
-                        r#"====================================
-                        {timestamp}
-                        ====================================
-                        Endpoint: {name}
-                        Path: {path}
-                        Max count: {max_count}
-                        Files: {file_count}
-                        Filter: {filter:?}
-                        Nothing to delete ;)
-                        Free space: {free_space_str} ({space_percent}%)
-                        Total space: {whole_space_str}
-                        "#
+r#"====================================
+{timestamp}
+====================================
+Endpoint: {name}
+Path: {path}
+Max count: {max_count}
+Files: {file_count}
+Filter: {filter:?}
+Nothing to delete ;)
+Free space: {free_space_str} ({space_percent}%)
+Total space: {whole_space_str}
+"#
                     );
                 }
                 match write_to_log_file(&message) {
