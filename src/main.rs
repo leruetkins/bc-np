@@ -5,7 +5,6 @@ use std::env;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::prelude::*;
-// use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
@@ -83,7 +82,7 @@ async fn validator(
     let settings_passw = CONFIG_JSON["settings"][0]["password"].as_str().unwrap().to_string();
 
     if credentials.user_id().eq(&settings_login) && credentials.password().unwrap().eq(&settings_passw) {
-        eprintln!("{credentials:?}");
+        // eprintln!("{credentials:?}");
         Ok(req)
     } else {
         Err((ErrorUnauthorized("unauthorized"), req))
