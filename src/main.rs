@@ -22,8 +22,6 @@ static mut NODE_NAME: Option<String> = None;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 
-
-
 use actix_web::{get, HttpResponse, Result, App, HttpServer};
 use serde::{Serialize};
 
@@ -283,8 +281,6 @@ fn delete_old_files(
         Some(whole_space) => {
             whole_space_gb = whole_space / 1_000_000_000;
             whole_space_str = format!("{} GB", whole_space_gb);
-            // let whole_colored_str = whole_space_str.green().to_string();
-            // println!("Whole space: {}", whole_space_str);
         }
         None => println!("Failed to get free space on {}", path),
     }
@@ -293,9 +289,7 @@ fn delete_old_files(
         Some(free_space) => {
             free_space_gb = free_space / 1_000_000_000;
             free_space_str = format!("{} GB", free_space_gb);
-            // let colored_str = free_space_str.green();
             space_percent = (free_space_gb as f64 / whole_space_gb as f64 * 100.0).round();
-            // println!("Free space: {} ({}%)", free_space_str, space_percent);
         }
         None => println!("Failed to get free space on {}", path),
     }
@@ -346,8 +340,6 @@ fn delete_old_files(
 
 fn run_config_job() {
     let current_dir = env::current_dir().unwrap();
-    // let current_dir=PathBuf::from(current_dir);
-
 
     let period = CONFIG_JSON["settings"][0]["period"].as_u64().unwrap();
     let port = CONFIG_JSON["settings"][0]["port"].as_u64().unwrap_or(8000);
@@ -365,8 +357,6 @@ fn run_config_job() {
         port,
         current_dir.display()
     );
-
-  
 
     std::thread::sleep(Duration::from_secs(5));
 
@@ -401,7 +391,6 @@ fn run_config_job() {
                 if file_count > max_count.try_into().unwrap() {
                     match delete_old_files(path, max_count, &filter, name) {
                         Ok(msg) => {
-                            // println!("Deleted old files:\n{}", msg);
                             message.push_str(&msg);
                         }
                         Err(e) => println!("Error deleting old files: {}", e),
@@ -417,8 +406,6 @@ fn run_config_job() {
                         Some(whole_space) => {
                             whole_space_gb = whole_space / 1_000_000_000;
                             whole_space_str = format!("{} GB", whole_space_gb);
-                            // let whole_colored_str = whole_space_str.green().to_string();
-                            // println!("Whole space: {}", whole_space_str);
                         }
                         None => println!("Failed to get free space on {}", path),
                     }
@@ -427,16 +414,11 @@ fn run_config_job() {
                         Some(free_space) => {
                             free_space_gb = free_space / 1_000_000_000;
                             free_space_str = format!("{} GB", free_space_gb);
-                            // let colored_str = free_space_str.green();
-
-                            // println!("Free space: {} ({}%)", free_space_str, space_percent);
                         }
                         None => println!("Failed to get free space on {}", path),
                     }
 
                     space_percent = (free_space_gb as f64 / whole_space_gb as f64 * 100.0).round();
-                    // println!("Free space: {} ({}%)", free_space_str, space_percent);
-                    // println!("Whole space: {}", whole_space_str);
                     let timestamp = Local::now().format("%d-%m-%Y %H:%M:%S").to_string();
                     message = format!(
                         r#"====================================
