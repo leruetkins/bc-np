@@ -7,7 +7,9 @@
   "settings": [
     {
       "period": 15,
-      "port":8000
+      "port":8000,
+      "login": "admin",
+      "password": "admin"
     }
   ],
   "endpoints": [

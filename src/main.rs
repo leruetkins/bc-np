@@ -10,6 +10,12 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
+use once_cell::sync::Lazy; 
+static CONFIG_JSON: Lazy<serde_json::Value> = Lazy::new(|| {
+    let config = fs::read_to_string("config.json").expect("Unable to read config");
+    serde_json::from_str(&config).expect("Invalid JSON format")
+});
+
 
 const APP_VERSION: f64 = 0.1;
 static mut NODE_NAME: Option<String> = None;
@@ -21,6 +27,10 @@ use std::os::windows::ffi::OsStrExt;
 
 use actix_web::{get, HttpResponse, Result, App, HttpServer};
 use serde::{Serialize};
+
+use actix_web::{dev::ServiceRequest, Error};
+use actix_web_httpauth::{extractors::basic::BasicAuth, middleware::HttpAuthentication};
+use actix_web::error::ErrorUnauthorized;
 
 
 #[derive(Serialize)]
@@ -65,23 +75,37 @@ async fn index() -> HttpResponse {
     HttpResponse::Ok().content_type("text/html").body(html)
 }
 
+async fn validator(
+    req: ServiceRequest,
+    credentials: BasicAuth,
+) -> Result<ServiceRequest, (Error, ServiceRequest)> {
+    let settings_login = CONFIG_JSON["settings"][0]["login"].as_str().unwrap().to_string();
+    let settings_passw = CONFIG_JSON["settings"][0]["password"].as_str().unwrap().to_string();
+
+    if credentials.user_id().eq(&settings_login) && credentials.password().unwrap().eq(&settings_passw) {
+        eprintln!("{credentials:?}");
+        Ok(req)
+    } else {
+        Err((ErrorUnauthorized("unauthorized"), req))
+    }
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let config = fs::read_to_string("config.json").expect("Unable to read config");
-    let config_json: serde_json::Value =
-        serde_json::from_str(&config).expect("Invalid JSON format");
-        let node_name = config_json["node"]["name"].as_str().unwrap().to_string();
+        let node_name = CONFIG_JSON["node"]["name"].as_str().unwrap().to_string();
         unsafe {
             NODE_NAME = Some(node_name);
         }
 
-    let port = config_json["settings"][0]["port"].as_u64().unwrap_or(8000);
+    let port = CONFIG_JSON["settings"][0]["port"].as_u64().unwrap_or(8000);
     // Start the config job in a new thread
     thread::spawn(|| run_config_job());
 
     // Start the HTTP server
     HttpServer::new(|| {
+        let auth = HttpAuthentication::basic(validator);
                 App::new()
+            .wrap(auth)   
             .service(index)
             .service(get_config)
             .service(log)
@@ -325,16 +349,13 @@ fn run_config_job() {
     let current_dir = env::current_dir().unwrap();
     // let current_dir=PathBuf::from(current_dir);
 
-    let config = fs::read_to_string("config.json").expect("Unable to read config");
-    let config_json: serde_json::Value =
-        serde_json::from_str(&config).expect("Invalid JSON format");
 
-    let period = config_json["settings"][0]["period"].as_u64().unwrap();
-    let port = config_json["settings"][0]["port"].as_u64().unwrap_or(8000);
+    let period = CONFIG_JSON["settings"][0]["period"].as_u64().unwrap();
+    let port = CONFIG_JSON["settings"][0]["port"].as_u64().unwrap_or(8000);
 
-    let node_name = config_json["node"]["name"].as_str().unwrap();
-    let node_place = config_json["node"]["place"].as_str().unwrap();
-    let node_description = config_json["node"]["description"].as_str().unwrap();
+    let node_name = CONFIG_JSON["node"]["name"].as_str().unwrap();
+    let node_place = CONFIG_JSON["node"]["place"].as_str().unwrap();
+    let node_description = CONFIG_JSON["node"]["description"].as_str().unwrap();
 
     println!("bc-np {}", APP_VERSION);
     println!(
@@ -352,7 +373,7 @@ fn run_config_job() {
 
     loop {
         let mut enabled_count = 0;
-        for endpoint in config_json["endpoints"].as_array().unwrap() {
+        for endpoint in CONFIG_JSON["endpoints"].as_array().unwrap() {
             let name = endpoint["name"].as_str().unwrap();
             let path = endpoint["path"].as_str().unwrap();
             let max_count = endpoint["count"].as_i64().unwrap();
@@ -426,12 +447,12 @@ Endpoint: {name}
 Path: {path}
 Max count: {max_count}
 Files: {file_count}
-Filter: {:?}
+Filter: {filter:?}
 Nothing to delete ;)
 Free space: {free_space_str} ({space_percent}%)
 Total space: {whole_space_str}
-"#,
-                filter);
+"#
+);
                 }
                 match write_to_log_file(&message) {
                     Ok(_) => {}, 
