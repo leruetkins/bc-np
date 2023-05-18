@@ -36,10 +36,15 @@ struct Config {
     version: String,
 }
 
+#[get("/favicon.ico")]
+async fn favicon() -> actix_web::Result<actix_files::NamedFile> {
+Ok(actix_files::NamedFile::open("favicon.ico")?)
+}
+
 #[get("/config")]
 async fn get_config() -> HttpResponse {
     match fs::read_to_string("config.json") {
-        Ok(config_file) => HttpResponse::Ok().content_type("application/json").body(config_file),
+        Ok(config_file) => HttpResponse::Ok().content_type("application/json").append_header(("sdsds", "sds")).body(config_file),
         Err(_) => HttpResponse::NotFound().content_type("text/html; charset=utf-8").body("<h1>Unable to read the config file</h1>"),
     }
 }
@@ -47,7 +52,7 @@ async fn get_config() -> HttpResponse {
 #[get("/log")]
 async fn log() -> HttpResponse {
     match fs::read_to_string("delete.log") {
-        Ok(log_file) => HttpResponse::Ok().content_type("text/plain; charset=utf-8").body(log_file),
+        Ok(log_file) => HttpResponse::Ok().content_type("text/plain; charset=utf-8").append_header(("Link", "rel=\"shortcut icon\" href=\"data:;base64,iVBORw0KGgo=\"")).body(log_file),
         Err(_) => HttpResponse::NotFound().content_type("text/html; charset=utf-8").body("<h1>There is no log file. Nothing was still deleted.</h1>"),
     }
 }
@@ -105,6 +110,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(auth)   
             .service(index)
             .service(get_config)
+            .service(favicon)
             .service(log)
     })
     .bind(format!("0.0.0.0:{}", port))?
