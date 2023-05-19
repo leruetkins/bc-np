@@ -37,8 +37,11 @@ struct Config {
 }
 
 #[get("/favicon.ico")]
-async fn favicon() -> actix_web::Result<actix_files::NamedFile> {
-Ok(actix_files::NamedFile::open("favicon.ico")?)
+async fn favicon() -> Result<HttpResponse, Error> {
+    let pixel = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVQI12P4//8/AAX+Av7czFnnAAAAAElFTkSuQmCC";
+    let decoded = base64::decode(pixel).map_err(|_| Error::from(std::io::Error::new(std::io::ErrorKind::InvalidData, "Failed to decode base64 image")))?;
+    let body = actix_web::web::Bytes::copy_from_slice(&decoded);
+    Ok(HttpResponse::Ok().content_type("image/png").body(body))
 }
 
 #[get("/config")]

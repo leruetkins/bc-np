@@ -314,6 +314,7 @@ dependencies = [
  "actix-files",
  "actix-web",
  "actix-web-httpauth",
+ "base64 0.13.1",
  "chrono",
  "glob",
  "once_cell",
