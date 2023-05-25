@@ -1,5 +1,5 @@
 # bc-np
-App to Clean Backups
+App which Cleans Backups
 
 This program was written in whole or in part with ChatGPT. If you need to increase the code and add new features, you are always welcome.
 
