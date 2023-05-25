@@ -16,7 +16,7 @@ static CONFIG_JSON: Lazy<serde_json::Value> = Lazy::new(|| {
 });
 
 
-const APP_VERSION: f64 = 0.1;
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
