@@ -17,7 +17,6 @@ static CONFIG_JSON: Lazy<serde_json::Value> = Lazy::new(|| {
 
 
 const APP_VERSION: f64 = 0.1;
-static mut NODE_NAME: Option<String> = None;
 
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
@@ -62,7 +61,7 @@ async fn log() -> HttpResponse {
 
 #[get("/")]
 async fn index() -> HttpResponse {
-    let node_name = unsafe { NODE_NAME.clone() }.expect("NODE_NAME is not set");
+    let node_name = CONFIG_JSON["node"]["name"].as_str().unwrap();
 
     let html = format!(
         r#"<html>
@@ -97,10 +96,6 @@ async fn validator(
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-        let node_name = CONFIG_JSON["node"]["name"].as_str().unwrap().to_string();
-        unsafe {
-            NODE_NAME = Some(node_name);
-        }
 
     let port = CONFIG_JSON["settings"][0]["port"].as_u64().unwrap_or(8000);
     // Start the config job in a new thread
