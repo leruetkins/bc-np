@@ -22,18 +22,12 @@ use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 
 use actix_web::{get, HttpResponse, Result, App, HttpServer};
-use serde::{Serialize};
 
 use actix_web::{dev::ServiceRequest, Error};
 use actix_web_httpauth::{extractors::basic::BasicAuth, middleware::HttpAuthentication};
 use actix_web::error::ErrorUnauthorized;
 
 
-#[derive(Serialize)]
-struct Config {
-    name: String,
-    version: String,
-}
 
 #[get("/favicon.ico")]
 async fn favicon() -> Result<HttpResponse, Error> {
