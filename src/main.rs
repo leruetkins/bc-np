@@ -192,8 +192,9 @@ fn write_to_log_file(message: &str) -> Result<(), String> {
         .open(&log_file_path)
         .map_err(|err| format!("Failed to reopen log file: {}", err))?;
 
-    writeln!(log_file, "{}{}", message, contents)
+        writeln!(log_file, "{}\n{}", message, contents.trim())
         .map_err(|err| format!("Failed to write to log file: {}", err))?;
+    
 
     Ok(())
 }
@@ -305,8 +306,7 @@ fn delete_old_files(
     }
 
     let message = format!(
-r#"
-====================================
+r#"====================================
 {timestamp}
 ====================================
 Endpoint: {name}
@@ -318,8 +318,7 @@ Deleted {deleted_folders} folders{}
 Remaining files: {num_files}
 Remaining folders: {num_dirs}
 Free space: {free_space_str} ({space_percent}%)
-Total space: {whole_space_str}
-"#,
+Total space: {whole_space_str}"#,
         filter,
         if deleted_files == 0 {
             "".to_string()
@@ -360,6 +359,8 @@ fn run_config_job() {
 
     loop {
         let mut enabled_count = 0;
+        let mut message = String::new();
+        let mut formatted_message= String::new();
         for endpoint in CONFIG_JSON["endpoints"].as_array().unwrap() {
             let name = endpoint["name"].as_str().unwrap();
             let path = endpoint["path"].as_str().unwrap();
@@ -385,7 +386,7 @@ fn run_config_job() {
                 };
                 let file_count = files.count();
 
-                let mut message = String::new();
+                
                 if file_count > max_count.try_into().unwrap() {
                     match delete_old_files(path, max_count, &filter, name) {
                         Ok(msg) => {
@@ -418,7 +419,7 @@ fn run_config_job() {
 
                     space_percent = (free_space_gb as f64 / whole_space_gb as f64 * 100.0).round();
                     let timestamp = Local::now().format("%d-%m-%Y %H:%M:%S").to_string();
-                    message = format!(
+                    formatted_message = format!(
 r#"====================================
 {timestamp}
 ====================================
@@ -430,15 +431,16 @@ Filter: {filter:?}
 Nothing to delete ;)
 Free space: {free_space_str} ({space_percent}%)
 Total space: {whole_space_str}
-"#
-                    );
+"#);
                 }
-                match write_to_log_file(&message) {
-                    Ok(_) => {}, 
-                    Err(err) => eprintln!("Error to write to log file: {:?}", err),
-                }
-                println!("{}", message);
+                println!("{}", formatted_message);
+                message += &formatted_message;
             }
+            
+        }
+        match write_to_log_file(&message) {
+            Ok(_) => {}, 
+            Err(err) => eprintln!("Error to write to log file: {:?}", err),
         }
         if enabled_count ==0 {
         println!("There are no activated endpoints. Turn on at least one and restart app.");
