@@ -318,7 +318,8 @@ Deleted {deleted_folders} folders{}
 Remaining files: {num_files}
 Remaining folders: {num_dirs}
 Free space: {free_space_str} ({space_percent}%)
-Total space: {whole_space_str}"#,
+Total space: {whole_space_str}
+"#,
         filter,
         if deleted_files == 0 {
             "".to_string()
