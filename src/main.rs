@@ -84,7 +84,7 @@ async fn validator(
         // eprintln!("{credentials:?}");
         Ok(req)
     } else {
-        Err((ErrorUnauthorized("unauthorized"), req))
+        Err((ErrorUnauthorized("Unauthorized"), req))
     }
 }
 
@@ -345,7 +345,7 @@ fn run_config_job() {
     let node_place = CONFIG_JSON["node"]["place"].as_str().unwrap();
     let node_description = CONFIG_JSON["node"]["description"].as_str().unwrap();
 
-    println!("bc-np {}", APP_VERSION);
+    println!("bc-np {}. ©All rights in reserve.", APP_VERSION);
     println!(
         "Node: {}\nPlace: {}\nDescription: {}\nhttp port: {}\nPath: {}",
         node_name,
