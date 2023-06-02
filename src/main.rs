@@ -192,7 +192,7 @@ fn write_to_log_file(message: &str) -> Result<(), String> {
         .open(&log_file_path)
         .map_err(|err| format!("Failed to reopen log file: {}", err))?;
 
-        writeln!(log_file, "{}\n{}", message, contents.trim())
+        writeln!(log_file, "{}{}", message, contents.trim())
         .map_err(|err| format!("Failed to write to log file: {}", err))?;
     
 
