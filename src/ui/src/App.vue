@@ -21,9 +21,12 @@
     <nav class="navbar">
       <div class="nav-brand">bc-np</div>
       <div class="nav-links">
-        <a href="#" @click.prevent="currentSection = 'dashboard'">Dashboard</a>
-        <a href="#" @click.prevent="currentSection = 'endpoints'">Endpoints</a>
-        <a href="#" @click.prevent="currentSection = 'settings'">Settings</a>
+        <a href="/ui/dashboard">Dashboard</a>
+        <a href="/ui/endpoints">Endpoints</a>
+        <a href="/ui/settings">Settings</a>
+        <button class="theme-toggle" @click="toggleTheme" :title="isDark ? 'Light mode' : 'Dark mode'">
+          {{ isDark ? '☀️' : '🌙' }}
+        </button>
         <a href="#" @click.prevent="logout">Logout</a>
       </div>
     </nav>
@@ -190,6 +193,20 @@
         </form>
       </div>
     </div>
+
+    <div class="modal" :class="{ show: showGroupModal }">
+      <div class="modal-content">
+        <button class="close" @click="closeGroupModal">&times;</button>
+        <h3>{{ groupModalMode === 'add' ? 'Add Group' : 'Rename Group' }}</h3>
+        <form @submit.prevent="saveGroup">
+          <div class="form-group">
+            <label>Group Name</label>
+            <input v-model="groupForm.name" type="text" required autofocus>
+          </div>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </form>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -197,6 +214,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 
 const isAuthenticated = ref(false)
+const isDark = ref(false)
 const currentSection = ref('dashboard')
 const status = ref({})
 const config = ref({ groups: [] })
@@ -216,6 +234,11 @@ const editingEndpointIndex = ref(-1)
 const dragOverIndex = ref(-1)
 let draggedFromGroup = -1
 let draggedFromEndpoint = -1
+
+const showGroupModal = ref(false)
+const groupForm = reactive({ name: '' })
+const groupFormGroupIndex = ref(-1)
+const groupModalMode = ref('add') // 'add' or 'edit'
 
 const activeCount = computed(() => {
   let count = 0
@@ -266,6 +289,17 @@ function logout() {
   currentSection.value = 'dashboard'
 }
 
+function toggleTheme() {
+  isDark.value = !isDark.value
+  if (isDark.value) {
+    document.body.classList.add('dark')
+    localStorage.setItem('theme', 'dark')
+  } else {
+    document.body.classList.remove('dark')
+    localStorage.setItem('theme', 'light')
+  }
+}
+
 async function loadStatus() {
   const data = await apiCall('/api/status')
   if (data) status.value = data
@@ -288,17 +322,33 @@ function toggleGroup(gi) {
 }
 
 function addGroup() {
-  const name = prompt('Enter new group name:')
-  if (!name) return
-  config.value.groups.push({ name, endpoints: [], collapsed: false })
-  saveConfig()
+  groupModalMode.value = 'add'
+  groupForm.name = ''
+  groupFormGroupIndex.value = -1
+  showGroupModal.value = true
 }
 
 function editGroup(gi) {
-  const newName = prompt('Enter new group name:', config.value.groups[gi].name)
-  if (!newName) return
-  config.value.groups[gi].name = newName
+  groupModalMode.value = 'edit'
+  groupFormGroupIndex.value = gi
+  groupForm.name = config.value.groups[gi].name
+  showGroupModal.value = true
+}
+
+function closeGroupModal() {
+  showGroupModal.value = false
+  groupFormGroupIndex.value = -1
+}
+
+function saveGroup() {
+  if (!groupForm.name.trim()) return
+  if (groupModalMode.value === 'add') {
+    config.value.groups.push({ name: groupForm.name.trim(), endpoints: [], collapsed: false })
+  } else if (groupFormGroupIndex.value >= 0) {
+    config.value.groups[groupFormGroupIndex.value].name = groupForm.name.trim()
+  }
   saveConfig()
+  closeGroupModal()
 }
 
 function deleteGroup(gi) {
@@ -445,6 +495,20 @@ async function saveConfig() {
 }
 
 onMounted(() => {
+  const savedTheme = localStorage.getItem('theme')
+  if (savedTheme === 'dark') {
+    isDark.value = true
+    document.body.classList.add('dark')
+  }
+
+  // Handle direct URL routing
+  const path = window.location.pathname
+  if (path.includes('/endpoints')) {
+    currentSection.value = 'endpoints'
+  } else if (path.includes('/settings')) {
+    currentSection.value = 'settings'
+  }
+
   if (localStorage.getItem('credentials')) {
     isAuthenticated.value = true
     loadStatus()
