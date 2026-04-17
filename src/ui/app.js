@@ -191,5 +191,12 @@ function logout() {
 if (!localStorage.getItem('credentials')) {
     window.location.href = '/ui/login.html';
 } else {
-    showSection('dashboard');
+    const path = window.location.pathname;
+    if (path.includes('/endpoints')) {
+        showSection('endpoints');
+    } else if (path.includes('/settings')) {
+        showSection('settings');
+    } else {
+        showSection('dashboard');
+    }
 }

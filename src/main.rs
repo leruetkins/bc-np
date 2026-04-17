@@ -255,6 +255,21 @@ async fn ui_index() -> HttpResponse {
     serve_ui_file("login.html")
 }
 
+#[get("/ui/dashboard")]
+async fn ui_dashboard() -> HttpResponse {
+    serve_ui_file("dashboard.html")
+}
+
+#[get("/ui/endpoints")]
+async fn ui_endpoints() -> HttpResponse {
+    serve_ui_file("dashboard.html")
+}
+
+#[get("/ui/settings")]
+async fn ui_settings() -> HttpResponse {
+    serve_ui_file("dashboard.html")
+}
+
 fn read_config_simple() -> serde_json::Value {
     let config = fs::read_to_string("config.json").expect("Unable to read config");
     serde_json::from_str(&config).expect("Invalid JSON format")
@@ -299,6 +314,9 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(state_for_handler.clone())
             .service(ui_index)
+            .service(ui_dashboard)
+            .service(ui_endpoints)
+            .service(ui_settings)
             .service(ui_file_handler)
             .service(index)
             .service(indexRedirect)
