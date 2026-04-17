@@ -106,12 +106,14 @@ async fn api_status(state: web::Data<AppState>) -> HttpResponse {
     let empty: Vec<serde_json::Value> = vec![];
     let endpoints_raw = config["endpoints"].as_array().unwrap_or(&empty);
     
+    let default_period = config["settings"][0]["period"].as_i64().unwrap_or(15);
     let endpoints: Vec<_> = endpoints_raw.iter()
         .map(|ep| {
             let path = ep["path"].as_str().unwrap_or("");
             let file_count = fs::read_dir(path).map(|d| d.count()).unwrap_or(0);
             let free_space = get_free_space(path).unwrap_or(0) / 1_000_000_000;
             let whole_space = get_whole_space(path).unwrap_or(0) / 1_000_000_000;
+            let period = ep["period"].as_i64().unwrap_or(default_period);
 
             let filter: Vec<String> = ep["filter"]
                 .as_array()
@@ -126,6 +128,7 @@ async fn api_status(state: web::Data<AppState>) -> HttpResponse {
                 "count": ep["count"].as_i64().unwrap_or(0),
                 "enabled": ep["enabled"].as_bool().unwrap_or(false),
                 "filter": filter,
+                "period": period,
                 "fileCount": file_count,
                 "freeSpaceGb": free_space,
                 "wholeSpaceGb": whole_space
@@ -606,14 +609,14 @@ fn run_config_job(state: AppState) {
             continue;
         }
         
-        let period = config["settings"][0]["period"].as_u64().unwrap();
+        let default_period = config["settings"][0]["period"].as_u64().unwrap_or(15);
         
         let enabled_count_check = config["endpoints"].as_array().unwrap()
             .iter()
             .filter(|ep| ep["enabled"].as_bool().unwrap_or(false))
             .count();
         
-        println!("--- Config check: {} enabled endpoints (period={}) ---", enabled_count_check, period);
+        println!("--- Config check: {} enabled endpoints ---", enabled_count_check);
         
         let mut enabled_count = 0;
         let mut message = String::new();
@@ -623,6 +626,7 @@ fn run_config_job(state: AppState) {
             let path = endpoint["path"].as_str().unwrap();
             let max_count = endpoint["count"].as_i64().unwrap();
             let is_enabled = endpoint["enabled"].as_bool().unwrap();
+            let _period = endpoint["period"].as_u64().unwrap_or(default_period);
             let filter: Vec<String> = endpoint["filter"]
                 .as_array()
                 .unwrap_or(&Vec::new())
@@ -707,6 +711,15 @@ Total space: {whole_space_str}
             continue;
         }
         
-        std::thread::sleep(Duration::from_secs(period));
+        // Find min period among enabled endpoints
+        let min_period = config["endpoints"].as_array().unwrap()
+            .iter()
+            .filter(|ep| ep["enabled"].as_bool().unwrap_or(false))
+            .map(|ep| ep["period"].as_u64().unwrap_or(default_period))
+            .min()
+            .unwrap_or(default_period);
+        
+        println!("--- Next check in {}s ---", min_period);
+        std::thread::sleep(Duration::from_secs(min_period));
     }
 }

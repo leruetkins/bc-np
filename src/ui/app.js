@@ -62,6 +62,7 @@ async function loadEndpoints() {
             <p class="path">${ep.path}</p>
             <div class="ep-stats">
                 <div class="stat"><span class="label">Files:</span> ${ep.fileCount} / ${ep.count}</div>
+                <div class="stat"><span class="label">Period:</span> ${ep.period || 15}s</div>
                 <div class="stat"><span class="label">Space:</span> ${ep.freeSpaceGb} / ${ep.wholeSpaceGb} GB</div>
             </div>
             <p class="filter">Filter: ${ep.filter.join(', ') || 'none'}</p>
@@ -115,6 +116,7 @@ function editEndpoint(index) {
     document.getElementById('ep-name').value = ep.name;
     document.getElementById('ep-path').value = ep.path;
     document.getElementById('ep-count').value = ep.count;
+    document.getElementById('ep-period').value = ep.period || 15;
     document.getElementById('ep-filter').value = ep.filter.join(', ');
     document.getElementById('ep-enabled').checked = ep.enabled;
     document.getElementById('modal').style.display = 'block';
@@ -144,6 +146,7 @@ document.getElementById('endpoint-form').addEventListener('submit', async (e) =>
         name: document.getElementById('ep-name').value,
         path: document.getElementById('ep-path').value,
         count: parseInt(document.getElementById('ep-count').value),
+        period: parseInt(document.getElementById('ep-period').value) || 15,
         filter: document.getElementById('ep-filter').value.split(',').map(s => s.trim()).filter(s => s),
         enabled: document.getElementById('ep-enabled').checked
     };
