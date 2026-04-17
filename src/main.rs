@@ -1,5 +1,6 @@
 use chrono::prelude::*;
 use glob::Pattern;
+use once_cell::sync::Lazy;
 use std::convert::TryInto;
 use std::env;
 use std::fs;
@@ -9,11 +10,12 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
-use once_cell::sync::Lazy;
-static CONFIG_JSON: Lazy<serde_json::Value> = Lazy::new(|| {
+fn read_config() -> serde_json::Value {
     let config = fs::read_to_string("config.json").expect("Unable to read config");
     serde_json::from_str(&config).expect("Invalid JSON format")
-});
+}
+
+static CONFIG_JSON: Lazy<serde_json::Value> = Lazy::new(|| read_config());
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -53,12 +55,16 @@ async fn log() -> HttpResponse {
 
 #[get("/api/status")]
 async fn api_status() -> HttpResponse {
-    let node_name = CONFIG_JSON["node"]["name"].as_str().unwrap_or("Unknown");
-    let node_place = CONFIG_JSON["node"]["place"].as_str().unwrap_or("");
-    let node_description = CONFIG_JSON["node"]["description"].as_str().unwrap_or("");
+    let config = read_config();
+    
+    let node_name = config["node"]["name"].as_str().unwrap_or("Unknown");
+    
+    let node_name = config["node"]["name"].as_str().unwrap_or("Unknown");
+    let node_place = config["node"]["place"].as_str().unwrap_or("");
+    let node_description = config["node"]["description"].as_str().unwrap_or("");
 
     let empty: Vec<serde_json::Value> = vec![];
-    let endpoints_raw = CONFIG_JSON["endpoints"].as_array().unwrap_or(&empty);
+    let endpoints_raw = config["endpoints"].as_array().unwrap_or(&empty);
     
     let endpoints: Vec<_> = endpoints_raw.iter()
         .map(|ep| {
@@ -130,7 +136,11 @@ async fn api_update_config(config: actix_web::web::Json<ConfigUpdate>) -> HttpRe
     }
 
     match fs::write("config.json", current_config.to_string()) {
-        Ok(_) => HttpResponse::Ok().content_type("application/json").body(r#"{"status":"ok"}"#),
+        Ok(_) => {
+            // Force lazy to reload
+            let _ = Lazy::force(&CONFIG_JSON);
+            HttpResponse::Ok().content_type("application/json").body(r#"{"status":"ok"}"#)
+        },
         Err(e) => HttpResponse::InternalServerError().body(format!("Failed to write config: {}", e)),
     }
 }
@@ -152,7 +162,8 @@ async fn index() -> HttpResponse {
 
 #[get("/index")]
 async fn indexRedirect() -> HttpResponse {
-    let node_name = CONFIG_JSON["node"]["name"].as_str().unwrap();
+    let config = Lazy::force(&CONFIG_JSON);
+    let node_name = config["node"]["name"].as_str().unwrap();
 
     let html = format!(
         r#"<html>
@@ -214,8 +225,9 @@ async fn validator(
         return Ok(req);
     }
     
-    let settings_login = CONFIG_JSON["settings"][0]["login"].as_str().unwrap().to_string();
-    let settings_passw = CONFIG_JSON["settings"][0]["password"].as_str().unwrap().to_string();
+    let config = read_config();
+    let settings_login = config["settings"][0]["login"].as_str().unwrap().to_string();
+    let settings_passw = config["settings"][0]["password"].as_str().unwrap().to_string();
 
     if credentials.user_id().eq(&settings_login) && credentials.password().unwrap().eq(&settings_passw) {
         Ok(req)
@@ -226,7 +238,8 @@ async fn validator(
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let port = CONFIG_JSON["settings"][0]["port"].as_u64().unwrap_or(8000) as u16;
+    let config = read_config();
+    let port = config["settings"][0]["port"].as_u64().unwrap_or(8000) as u16;
     thread::spawn(|| run_config_job());
 
     HttpServer::new(move || {
@@ -478,12 +491,13 @@ Total space: {whole_space_str}
 fn run_config_job() {
     let current_dir = env::current_dir().unwrap();
 
-    let period = CONFIG_JSON["settings"][0]["period"].as_u64().unwrap();
-    let port = CONFIG_JSON["settings"][0]["port"].as_u64().unwrap_or(8000);
+    let config = Lazy::force(&CONFIG_JSON);
+    let period = config["settings"][0]["period"].as_u64().unwrap();
+    let port = config["settings"][0]["port"].as_u64().unwrap_or(8000);
 
-    let node_name = CONFIG_JSON["node"]["name"].as_str().unwrap();
-    let node_place = CONFIG_JSON["node"]["place"].as_str().unwrap();
-    let node_description = CONFIG_JSON["node"]["description"].as_str().unwrap();
+    let node_name = config["node"]["name"].as_str().unwrap();
+    let node_place = config["node"]["place"].as_str().unwrap();
+    let node_description = config["node"]["description"].as_str().unwrap();
 
     println!("bc-np {}. All rights reserved.", APP_VERSION);
     println!(
@@ -498,10 +512,13 @@ fn run_config_job() {
     std::thread::sleep(Duration::from_secs(5));
 
     loop {
+        let config = Lazy::force(&CONFIG_JSON);
+        let period = config["settings"][0]["period"].as_u64().unwrap();
+        
         let mut enabled_count = 0;
         let mut message = String::new();
         let mut formatted_message = String::new();
-        for endpoint in CONFIG_JSON["endpoints"].as_array().unwrap() {
+        for endpoint in config["endpoints"].as_array().unwrap() {
             let name = endpoint["name"].as_str().unwrap();
             let path = endpoint["path"].as_str().unwrap();
             let max_count = endpoint["count"].as_i64().unwrap();

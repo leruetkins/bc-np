@@ -3,13 +3,21 @@ let editingIndex = -1;
 
 async function apiCall(url, method = 'GET', body = null) {
     const creds = localStorage.getItem('credentials') || '';
-    const headers = { 'Authorization': 'Basic ' + creds };
+    const headers = { 
+        'Authorization': 'Basic ' + creds,
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache'
+    };
     if (body) headers['Content-Type'] = 'application/json';
+
+    // Add timestamp to prevent caching
+    const cacheBuster = url.includes('?') ? '&' : '?';
+    const fullUrl = url + cacheBuster + '_=' + Date.now();
 
     const opts = { method, headers };
     if (body) opts.body = JSON.stringify(body);
 
-    const resp = await fetch(url, opts);
+    const resp = await fetch(fullUrl, opts);
     if (resp.status === 401) {
         localStorage.removeItem('credentials');
         window.location.href = '/ui/login.html';
