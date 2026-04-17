@@ -31,12 +31,19 @@
   padding: 0;
 }
 
+html, body {
+  height: 100%;
+  overflow-x: hidden;
+}
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
   background: hsl(var(--background));
   color: hsl(var(--foreground));
   font-size: 14px;
   line-height: 1.5;
+  display: flex;
+  flex-direction: column;
 }
 
 h1, h2, h3, h4 {
@@ -64,6 +71,7 @@ a:hover {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .nav-brand {
@@ -86,7 +94,8 @@ a:hover {
   padding: 1.5rem;
   max-width: 1200px;
   margin: 0 auto;
-  min-height: calc(100vh - 60px);
+  flex: 1;
+  overflow-y: auto;
 }
 
 .cards {
