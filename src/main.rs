@@ -438,10 +438,7 @@ fn read_config_simple() -> serde_json::Value {
     } else {
         serde_json::json!({})
     };
-    // If config.json exists and provides login, log it for debugging (no password log)
-    if let Some(login) = cfg.get("settings").and_then(|s| s.as_array()).and_then(|arr| arr.get(0)).and_then(|m| m.get("login")).and_then(|v| v.as_str()) {
-        println!("[debug] runtime configured login: {}", login);
-    };
+    // Debug logs removed
     // Return full cfg or defaults
     if cfg.as_object().unwrap_or(&serde_json::Map::new()).is_empty() {
         serde_json::json!({
@@ -466,10 +463,7 @@ async fn validator(
     credentials: BasicAuth,
 ) -> Result<ServiceRequest, (Error, ServiceRequest)> {
     let path = req.path();
-    // Debug: log incoming API path and provided credentials user (for troubleshooting)
-    // Note: credentials.user_id() may be used only after extraction; here we log the path for tracing.
-    println!("[auth-debug] path: {}", path);
-    println!("[auth-debug] auth attempt - user_id: {}", credentials.user_id());
+    // Debug logs removed for production
     
     // Skip auth for UI assets and static pages
     if path.starts_with("/ui") || path.starts_with("/assets") || path == "/" || path == "/index" {
