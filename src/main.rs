@@ -9,24 +9,22 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
-use once_cell::sync::Lazy; 
+use once_cell::sync::Lazy;
 static CONFIG_JSON: Lazy<serde_json::Value> = Lazy::new(|| {
     let config = fs::read_to_string("config.json").expect("Unable to read config");
     serde_json::from_str(&config).expect("Invalid JSON format")
 });
-
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 
-use actix_web::{get, HttpResponse, Result, App, HttpServer};
+use actix_web::{get, post, HttpResponse, App, HttpServer, web};
 
 use actix_web::{dev::ServiceRequest, Error};
 use actix_web_httpauth::{extractors::basic::BasicAuth, middleware::HttpAuthentication};
 use actix_web::error::ErrorUnauthorized;
-
 
 
 #[get("/favicon.ico")]
@@ -40,7 +38,7 @@ async fn favicon() -> Result<HttpResponse, Error> {
 #[get("/config")]
 async fn get_config() -> HttpResponse {
     match fs::read_to_string("config.json") {
-        Ok(config_file) => HttpResponse::Ok().content_type("application/json").append_header(("sdsds", "sds")).body(config_file),
+        Ok(config_file) => HttpResponse::Ok().content_type("application/json").body(config_file),
         Err(_) => HttpResponse::NotFound().content_type("text/html; charset=utf-8").body("<h1>Unable to read the config file</h1>"),
     }
 }
@@ -48,13 +46,112 @@ async fn get_config() -> HttpResponse {
 #[get("/log")]
 async fn log() -> HttpResponse {
     match fs::read_to_string("delete.log") {
-        Ok(log_file) => HttpResponse::Ok().content_type("text/plain; charset=utf-8").append_header(("Link", "rel=\"shortcut icon\" href=\"data:;base64,iVBORw0KGgo=\"")).body(log_file),
+        Ok(log_file) => HttpResponse::Ok().content_type("text/plain; charset=utf-8").body(log_file),
         Err(_) => HttpResponse::NotFound().content_type("text/html; charset=utf-8").body("<h1>There is no log file. Nothing was still deleted.</h1>"),
+    }
+}
+
+#[get("/api/status")]
+async fn api_status() -> HttpResponse {
+    let node_name = CONFIG_JSON["node"]["name"].as_str().unwrap_or("Unknown");
+    let node_place = CONFIG_JSON["node"]["place"].as_str().unwrap_or("");
+    let node_description = CONFIG_JSON["node"]["description"].as_str().unwrap_or("");
+
+    let empty: Vec<serde_json::Value> = vec![];
+    let endpoints_raw = CONFIG_JSON["endpoints"].as_array().unwrap_or(&empty);
+    
+    let endpoints: Vec<_> = endpoints_raw.iter()
+        .map(|ep| {
+            let path = ep["path"].as_str().unwrap_or("");
+            let file_count = fs::read_dir(path).map(|d| d.count()).unwrap_or(0);
+            let free_space = get_free_space(path).unwrap_or(0) / 1_000_000_000;
+            let whole_space = get_whole_space(path).unwrap_or(0) / 1_000_000_000;
+
+            let filter: Vec<String> = ep["filter"]
+                .as_array()
+                .unwrap_or(&empty)
+                .iter()
+                .map(|v| v.as_str().unwrap_or("").to_string())
+                .collect();
+
+            serde_json::json!({
+                "name": ep["name"].as_str().unwrap_or(""),
+                "path": path,
+                "count": ep["count"].as_i64().unwrap_or(0),
+                "enabled": ep["enabled"].as_bool().unwrap_or(false),
+                "filter": filter,
+                "fileCount": file_count,
+                "freeSpaceGb": free_space,
+                "wholeSpaceGb": whole_space
+            })
+        })
+        .collect();
+
+    let status = serde_json::json!({
+        "version": APP_VERSION,
+        "node": {
+            "name": node_name,
+            "place": node_place,
+            "description": node_description
+        },
+        "endpoints": endpoints
+    });
+
+    HttpResponse::Ok()
+        .content_type("application/json")
+        .body(status.to_string())
+}
+
+#[derive(serde::Deserialize)]
+struct ConfigUpdate {
+    node: Option<serde_json::Value>,
+    settings: Option<Vec<serde_json::Value>>,
+    endpoints: Option<Vec<serde_json::Value>>,
+}
+
+#[post("/api/config")]
+async fn api_update_config(config: actix_web::web::Json<ConfigUpdate>) -> HttpResponse {
+    let mut current_config = match fs::read_to_string("config.json") {
+        Ok(c) => match serde_json::from_str::<serde_json::Value>(&c) {
+            Ok(v) => v,
+            Err(_) => return HttpResponse::BadRequest().body("Invalid config format"),
+        },
+        Err(_) => return HttpResponse::NotFound().body("Config file not found"),
+    };
+
+    if let Some(node) = config.node.clone() {
+        current_config["node"] = node;
+    }
+    if let Some(settings) = config.settings.clone() {
+        current_config["settings"] = serde_json::Value::Array(settings);
+    }
+    if let Some(endpoints) = config.endpoints.clone() {
+        current_config["endpoints"] = serde_json::Value::Array(endpoints);
+    }
+
+    match fs::write("config.json", current_config.to_string()) {
+        Ok(_) => HttpResponse::Ok().content_type("application/json").body(r#"{"status":"ok"}"#),
+        Err(e) => HttpResponse::InternalServerError().body(format!("Failed to write config: {}", e)),
+    }
+}
+
+#[get("/api/log")]
+async fn api_log() -> HttpResponse {
+    match fs::read_to_string("delete.log") {
+        Ok(log_file) => HttpResponse::Ok().content_type("application/json").body(serde_json::json!({ "log": log_file }).to_string()),
+        Err(_) => HttpResponse::Ok().content_type("application/json").body(r#"{"log":""}"#),
     }
 }
 
 #[get("/")]
 async fn index() -> HttpResponse {
+    HttpResponse::Found()
+        .append_header(("Location", "/ui"))
+        .body("")
+}
+
+#[get("/index")]
+async fn indexRedirect() -> HttpResponse {
     let node_name = CONFIG_JSON["node"]["name"].as_str().unwrap();
 
     let html = format!(
@@ -62,8 +159,9 @@ async fn index() -> HttpResponse {
         <h1>Welcome to bc-np {}</h1>
         <div><h2>Node: {}</h2></div>
         <ul>
-            <li><a href="/log">View Log File</a></li>
-            <li><a href="/config">View Config File</a></li>
+            <li><a href="/ui">Web UI</a></li>
+            <li><a href="/log">View Log</a></li>
+            <li><a href="/config">View Config</a></li>
         </ul>
         </html>"#,
         APP_VERSION,
@@ -73,15 +171,53 @@ async fn index() -> HttpResponse {
     HttpResponse::Ok().content_type("text/html").body(html)
 }
 
+fn serve_ui_file(path: &str) -> HttpResponse {
+    let file_path = std::path::Path::new("src/ui").join(path);
+
+    match fs::read(&file_path) {
+        Ok(contents) => {
+            let content_type = if path.ends_with(".html") {
+                "text/html"
+            } else if path.ends_with(".css") {
+                "text/css"
+            } else if path.ends_with(".js") {
+                "application/javascript"
+            } else if path.ends_with(".ico") {
+                "image/png"
+            } else {
+                "text/plain"
+            };
+            HttpResponse::Ok().content_type(content_type).body(contents)
+        }
+        Err(_) => HttpResponse::NotFound().body("File not found"),
+    }
+}
+
+#[get("/ui/{file:.*}")]
+async fn ui_file_handler(file: web::Path<String>) -> HttpResponse {
+    serve_ui_file(&file)
+}
+
+#[get("/ui")]
+async fn ui_index() -> HttpResponse {
+    serve_ui_file("login.html")
+}
+
 async fn validator(
     req: ServiceRequest,
     credentials: BasicAuth,
 ) -> Result<ServiceRequest, (Error, ServiceRequest)> {
+    let path = req.path();
+    
+    // Skip auth for /ui paths
+    if path.starts_with("/ui") || path == "/" || path.is_empty() {
+        return Ok(req);
+    }
+    
     let settings_login = CONFIG_JSON["settings"][0]["login"].as_str().unwrap().to_string();
     let settings_passw = CONFIG_JSON["settings"][0]["password"].as_str().unwrap().to_string();
 
     if credentials.user_id().eq(&settings_login) && credentials.password().unwrap().eq(&settings_passw) {
-        // eprintln!("{credentials:?}");
         Ok(req)
     } else {
         Err((ErrorUnauthorized("Unauthorized"), req))
@@ -90,20 +226,24 @@ async fn validator(
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-
-    let port = CONFIG_JSON["settings"][0]["port"].as_u64().unwrap_or(8000);
-    // Start the config job in a new thread
+    let port = CONFIG_JSON["settings"][0]["port"].as_u64().unwrap_or(8000) as u16;
     thread::spawn(|| run_config_job());
 
-    // Start the HTTP server
-    HttpServer::new(|| {
+    HttpServer::new(move || {
         let auth = HttpAuthentication::basic(validator);
-                App::new()
-            .wrap(auth)   
+        
+        App::new()
+            .service(ui_index)
+            .service(ui_file_handler)
             .service(index)
-            .service(get_config)
+            .service(indexRedirect)
             .service(favicon)
+            .service(get_config)
             .service(log)
+            .service(api_status)
+            .service(api_update_config)
+            .service(api_log)
+            .wrap(auth)
     })
     .bind(format!("0.0.0.0:{}", port))?
     .run()
@@ -194,7 +334,6 @@ fn write_to_log_file(message: &str) -> Result<(), String> {
 
         writeln!(log_file, "{}{}", message, contents.trim())
         .map_err(|err| format!("Failed to write to log file: {}", err))?;
-    
 
     Ok(())
 }
@@ -308,7 +447,7 @@ fn delete_old_files(
     let message = format!(
 r#"====================================
 {timestamp}
-====================================
+===================================
 Endpoint: {name}
 Path: {path}
 Max count: {max_count}
@@ -346,7 +485,7 @@ fn run_config_job() {
     let node_place = CONFIG_JSON["node"]["place"].as_str().unwrap();
     let node_description = CONFIG_JSON["node"]["description"].as_str().unwrap();
 
-    println!("bc-np {}. ©All rights in reserve.", APP_VERSION);
+    println!("bc-np {}. All rights reserved.", APP_VERSION);
     println!(
         "Node: {}\nPlace: {}\nDescription: {}\nhttp port: {}\nPath: {}",
         node_name,
@@ -361,7 +500,7 @@ fn run_config_job() {
     loop {
         let mut enabled_count = 0;
         let mut message = String::new();
-        let mut formatted_message= String::new();
+        let mut formatted_message = String::new();
         for endpoint in CONFIG_JSON["endpoints"].as_array().unwrap() {
             let name = endpoint["name"].as_str().unwrap();
             let path = endpoint["path"].as_str().unwrap();
@@ -375,19 +514,19 @@ fn run_config_job() {
                 .filter(|mask| !mask.is_empty())
                 .collect();
 
-            
+
             if is_enabled {
                 enabled_count += 1;
                 let files = match fs::read_dir(path) {
                     Ok(dir) => dir,
                     Err(_) => {
                         println!("Endpoint: {}\nThere isn't such directory: {}", name, path);
-                        break;
+                        continue;
                     }
                 };
                 let file_count = files.count();
 
-                
+
                 if file_count > max_count.try_into().unwrap() {
                     match delete_old_files(path, max_count, &filter, name) {
                         Ok(msg) => {
@@ -423,7 +562,7 @@ fn run_config_job() {
                     formatted_message = format!(
 r#"====================================
 {timestamp}
-====================================
+===================================
 Endpoint: {name}
 Path: {path}
 Max count: {max_count}
@@ -437,15 +576,15 @@ Total space: {whole_space_str}
                 println!("{}", formatted_message);
                 message += &formatted_message;
             }
-            
+
         }
         match write_to_log_file(&message) {
-            Ok(_) => {}, 
+            Ok(_) => {},
             Err(err) => eprintln!("Error to write to log file: {:?}", err),
         }
-        if enabled_count ==0 {
-        println!("There are no activated endpoints. Turn on at least one and restart app.");
-        break
+        if enabled_count == 0 {
+            println!("There are no activated endpoints. Turn on at least one and restart app.");
+            break
         }
         std::thread::sleep(Duration::from_secs(period));
     }

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>bc-np - Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">bc-np</div>
+        <div class="nav-links">
+            <a href="#" onclick="showSection('dashboard')">Dashboard</a>
+            <a href="#" onclick="showSection('endpoints')">Endpoints</a>
+            <a href="#" onclick="showSection('settings')">Settings</a>
+            <a href="#" onclick="logout()">Logout</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <section id="dashboard-section" class="section active">
+            <h2>System Status</h2>
+            <div id="status-cards" class="cards"></div>
+        </section>
+
+        <section id="endpoints-section" class="section">
+            <h2>Endpoints</h2>
+            <div style="margin-bottom: 1rem; display: flex; gap: 0.5rem;">
+                <button onclick="showAddEndpointForm()" class="btn btn-primary">Add Endpoint</button>
+                <button onclick="refreshEndpoints()" class="btn btn-secondary">Refresh</button>
+            </div>
+            <div id="endpoints-list" class="endpoints-grid"></div>
+        </section>
+
+        <section id="settings-section" class="section">
+            <h2>Settings</h2>
+            <form id="settings-form">
+                <div class="form-group">
+                    <label>Node Name</label>
+                    <input type="text" id="node-name" name="nodeName">
+                </div>
+                <div class="form-group">
+                    <label>Place</label>
+                    <input type="text" id="node-place" name="nodePlace">
+                </div>
+                <div class="form-group">
+                    <label>Description</label>
+                    <input type="text" id="node-desc" name="nodeDesc">
+                </div>
+                <div class="form-group">
+                    <label>Period (seconds)</label>
+                    <input type="number" id="settings-period" name="period">
+                </div>
+                <div class="form-group">
+                    <label>Port</label>
+                    <input type="number" id="settings-port" name="port">
+                </div>
+                <button type="submit" class="btn btn-primary">Save Settings</button>
+            </form>
+            <h3>Change Password</h3>
+            <form id="password-form">
+                <div class="form-group">
+                    <label>New Login</label>
+                    <input type="text" id="new-login" name="newLogin">
+                </div>
+                <div class="form-group">
+                    <label>New Password</label>
+                    <input type="password" id="new-password" name="newPassword">
+                </div>
+                <button type="submit" class="btn btn-primary">Update Credentials</button>
+            </form>
+        </section>
+    </div>
+
+    <div id="modal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal()">&times;</span>
+            <h3 id="modal-title">Add Endpoint</h3>
+            <form id="endpoint-form">
+                <div class="form-group">
+                    <label>Name</label>
+                    <input type="text" id="ep-name" required>
+                </div>
+                <div class="form-group">
+                    <label>Path</label>
+                    <input type="text" id="ep-path" required>
+                </div>
+                <div class="form-group">
+                    <label>Max Count</label>
+                    <input type="number" id="ep-count" value="10" required>
+                </div>
+                <div class="form-group">
+                    <label>Filter (comma separated)</label>
+                    <input type="text" id="ep-filter">
+                </div>
+                <div class="form-group checkbox-group">
+                    <input type="checkbox" id="ep-enabled">
+                    <label><span>Enabled</span></label>
+                </div>
+                <button type="submit" class="btn btn-primary">Save</button>
+            </form>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
