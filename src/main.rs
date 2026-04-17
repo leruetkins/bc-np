@@ -468,8 +468,9 @@ fn delete_old_files(
                 }
             };
             let is_included_by_name = filter.iter().any(|mask| {
-                let path = Path::new(&name);
-                Pattern::new(mask).unwrap().matches_path(path)
+                // glob Pattern matches against filename with wildcards support
+                // e.g., "*.zip", "backup_*.*", "*_old.*"
+                Pattern::new(mask).map(|p| p.matches(&name)).unwrap_or(false)
             });
             !is_included_by_extension && !is_included_by_name
         })
