@@ -1,0 +1,28 @@
+{
+  "name": "bc-np",
+  "version": "1.0.0",
+  "description": "App which Cleans Backups",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite --config src/ui/vite.config.js",
+    "build": "vite build --config src/ui/vite.config.js",
+    "preview": "vite preview --config src/ui/vite.config.js",
+    "dist": "npm run build && cargo build --release && xcopy dist-ui target\\release\\dist-ui /E /I /Y"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/leruetkins/bc-np.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/leruetkins/bc-np/issues"
+  },
+  "homepage": "https://github.com/leruetkins/bc-np#readme",
+  "dependencies": {
+    "@vitejs/plugin-vue": "^6.0.6",
+    "vite": "^8.0.8",
+    "vue": "^3.5.32"
+  }
+}

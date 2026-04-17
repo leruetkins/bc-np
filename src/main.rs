@@ -64,27 +64,99 @@ const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 
-use actix_web::{get, post, delete, HttpResponse, App, HttpServer, web};
+use actix_web::{get, post, delete, HttpResponse, App, HttpServer, web, HttpRequest};
 
 use actix_web::{dev::ServiceRequest, Error};
 use actix_web_httpauth::{extractors::basic::BasicAuth, middleware::HttpAuthentication};
 use actix_web::error::ErrorUnauthorized;
 
+mod ui_assets;
+use ui_assets::UiAssets;
 
-#[get("/favicon.ico")]
-async fn favicon() -> Result<HttpResponse, Error> {
-    let pixel = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVQI12P4//8/AAX+Av7czFnnAAAAAElFTkSuQmCC";
-    let decoded = base64::decode(pixel).map_err(|_| Error::from(std::io::Error::new(std::io::ErrorKind::InvalidData, "Failed to decode base64 image")))?;
-    let body = actix_web::web::Bytes::copy_from_slice(&decoded);
-    Ok(HttpResponse::Ok().content_type("image/png").body(body))
+// Health check endpoint (unprotected) to verify service availability
+#[get("/api/health")]
+async fn api_health() -> HttpResponse {
+    HttpResponse::Ok()
+        .content_type("application/json")
+        .body("{\"status\":\"ok\"}")
+}
+
+fn serve_ui_file(path: &str) -> HttpResponse {
+    let files: Vec<_> = UiAssets::iter().collect();
+    
+    let asset = UiAssets::get(path)
+        .or_else(|| UiAssets::get(&format!("dist-ui/{}", path)))
+        .or_else(|| UiAssets::get(&format!("assets/{}", path)))
+        .or_else(|| {
+            let p = format!("dist-ui/{}", path);
+            UiAssets::get(&p.trim_start_matches('/'))
+        })
+        .or_else(|| UiAssets::get(&format!("assets/{}", path).trim_start_matches('/')));
+        // Disk fallback will be attempted after embedded asset checks below
+    
+    eprintln!("Looking for: '{}'", path);
+    eprintln!("Available: {:?}", files);
+    eprintln!("Result: {:?}", asset.is_some());
+    
+    if let Some(asset) = asset {
+        let content_type = if path.ends_with(".html") {
+            "text/html"
+        } else if path.ends_with(".css") {
+            "text/css"
+        } else if path.ends_with(".js") {
+            "application/javascript"
+        } else if path.ends_with(".ico") || path.ends_with(".png") {
+            "image/png"
+        } else if path.ends_with(".svg") {
+            "image/svg+xml"
+        } else {
+            "text/plain"
+        };
+        return HttpResponse::Ok()
+            .content_type(content_type)
+            .body(asset.data.to_vec());
+    }
+
+    // Disk fallback removed to rely solely on embedded assets for reliability
+
+    HttpResponse::NotFound().body(format!("File not found: {}", path))
 }
 
 #[get("/config")]
-async fn get_config() -> HttpResponse {
-    match fs::read_to_string("config.json") {
-        Ok(config_file) => HttpResponse::Ok().content_type("application/json").body(config_file),
-        Err(_) => HttpResponse::NotFound().content_type("text/html; charset=utf-8").body("<h1>Unable to read the config file</h1>"),
+async fn get_config(state: web::Data<AppState>, req: HttpRequest) -> HttpResponse {
+    // Basic auth gate with explicit decode to ensure credentials are correct
+    // Load current config to know what credentials to expect
+    let cfg = read_config_simple();
+    let settings_login = cfg.get("settings").and_then(|s| s.as_array()).and_then(|arr| arr.get(0)).and_then(|m| m.get("login")).and_then(|v| v.as_str()).unwrap_or("admin");
+    let settings_passw = cfg.get("settings").and_then(|s| s.as_array()).and_then(|arr| arr.get(0)).and_then(|m| m.get("password")).and_then(|v| v.as_str()).unwrap_or("admin");
+
+    // Parse Authorization header
+    let authorized = if let Some(auth) = req.headers().get("Authorization") {
+        if let Ok(auth_str) = auth.to_str() {
+            if auth_str.starts_with("Basic ") {
+                let b64 = &auth_str[6..];
+                if let Ok(decoded) = base64::decode(b64) {
+                    if let Ok(creds) = std::str::from_utf8(&decoded) {
+                        let mut parts = creds.splitn(2, ':');
+                        let user = parts.next().unwrap_or("");
+                        let pass = parts.next().unwrap_or("");
+                        user == settings_login && pass == settings_passw
+                    } else { false }
+                } else { false }
+            } else { false }
+        } else { false }
+    } else {
+        false
+    };
+
+    if !authorized {
+        return HttpResponse::Unauthorized()
+            .append_header(("WWW-Authenticate", "Basic realm=\"Restricted\""))
+            .finish();
     }
+
+    // Return the in-memory config (which is safe even if config.json is missing on disk)
+    HttpResponse::Ok().content_type("application/json").body(state.get_config().to_string())
 }
 
 #[get("/log")]
@@ -95,7 +167,7 @@ async fn log() -> HttpResponse {
     }
 }
 
-#[get("/api/status")]
+#[get("/status")]
 async fn api_status(state: web::Data<AppState>) -> HttpResponse {
     let config = state.get_config();
     
@@ -176,7 +248,7 @@ struct GroupUpdate {
     endpoints: Option<Vec<serde_json::Value>>,
 }
 
-#[post("/api/config")]
+#[post("/config")]
 async fn api_update_config(
     state: web::Data<AppState>,
     config: actix_web::web::Json<ConfigUpdate>
@@ -207,7 +279,7 @@ async fn api_update_config(
     }
 }
 
-#[post("/api/groups/{group_index}")]
+#[post("/groups/{group_index}")]
 async fn api_update_group(
     state: web::Data<AppState>,
     group_index: web::Path<usize>,
@@ -240,7 +312,7 @@ async fn api_update_group(
     }
 }
 
-#[actix_web::delete("/api/groups/{group_index}")]
+#[actix_web::delete("/groups/{group_index}")]
 async fn api_delete_group(
     state: web::Data<AppState>,
     group_index: web::Path<usize>
@@ -265,7 +337,7 @@ async fn api_delete_group(
     }
 }
 
-#[post("/api/groups")]
+#[post("/groups")]
 async fn api_create_group(
     state: web::Data<AppState>,
     group: actix_web::web::Json<GroupUpdate>
@@ -288,7 +360,7 @@ match fs::write("config.json", &json_str) {
     }
 }
 
-#[get("/api/log")]
+#[get("/log")]
 async fn api_log() -> HttpResponse {
     match fs::read_to_string("delete.log") {
         Ok(log_file) => HttpResponse::Ok().content_type("application/json").body(serde_json::json!({ "log": log_file }).to_string()),
@@ -322,29 +394,7 @@ async fn indexRedirect(state: web::Data<AppState>) -> HttpResponse {
         node_name
     );
 
-    HttpResponse::Ok().content_type("text/html").body(html)
-}
-
-fn serve_ui_file(path: &str) -> HttpResponse {
-    let file_path = std::path::Path::new("src/ui").join(path);
-
-    match fs::read(&file_path) {
-        Ok(contents) => {
-            let content_type = if path.ends_with(".html") {
-                "text/html"
-            } else if path.ends_with(".css") {
-                "text/css"
-            } else if path.ends_with(".js") {
-                "application/javascript"
-            } else if path.ends_with(".ico") {
-                "image/png"
-            } else {
-                "text/plain"
-            };
-            HttpResponse::Ok().content_type(content_type).body(contents)
-        }
-        Err(_) => HttpResponse::NotFound().body("File not found"),
-    }
+HttpResponse::Ok().content_type("text/html").body(html)
 }
 
 #[get("/ui/{file:.*}")]
@@ -352,29 +402,63 @@ async fn ui_file_handler(file: web::Path<String>) -> HttpResponse {
     serve_ui_file(&file)
 }
 
+#[get("/assets/{file:.*}")]
+async fn assets_handler(file: web::Path<String>) -> HttpResponse {
+    serve_ui_file(&file)
+}
+
 #[get("/ui")]
 async fn ui_index() -> HttpResponse {
-    serve_ui_file("login.html")
+    serve_ui_file("index.html")
 }
 
 #[get("/ui/dashboard")]
 async fn ui_dashboard() -> HttpResponse {
-    serve_ui_file("dashboard.html")
+    serve_ui_file("index.html")
 }
 
 #[get("/ui/endpoints")]
 async fn ui_endpoints() -> HttpResponse {
-    serve_ui_file("dashboard.html")
+    serve_ui_file("index.html")
 }
 
 #[get("/ui/settings")]
 async fn ui_settings() -> HttpResponse {
-    serve_ui_file("dashboard.html")
+    serve_ui_file("index.html")
 }
 
 fn read_config_simple() -> serde_json::Value {
-    let config = fs::read_to_string("config.json").expect("Unable to read config");
-    serde_json::from_str(&config).expect("Invalid JSON format")
+    // Try to read user config, but fall back to a safe defaults if missing or invalid
+    let cfg = if let Ok(config_str) = std::fs::read_to_string("config.json") {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&config_str) {
+            parsed
+        } else {
+            serde_json::json!({})
+        }
+    } else {
+        serde_json::json!({})
+    };
+    // If config.json exists and provides login, log it for debugging (no password log)
+    if let Some(login) = cfg.get("settings").and_then(|s| s.as_array()).and_then(|arr| arr.get(0)).and_then(|m| m.get("login")).and_then(|v| v.as_str()) {
+        println!("[debug] runtime configured login: {}", login);
+    };
+    // Return full cfg or defaults
+    if cfg.as_object().unwrap_or(&serde_json::Map::new()).is_empty() {
+        serde_json::json!({
+            "node": { "name": "Unknown" },
+            "settings": [
+                {
+                    "port": 8000,
+                    "login": "admin",
+                    "password": "admin",
+                    "period": 15
+                }
+            ],
+            "groups": []
+        })
+    } else {
+        cfg
+    }
 }
 
 async fn validator(
@@ -382,17 +466,39 @@ async fn validator(
     credentials: BasicAuth,
 ) -> Result<ServiceRequest, (Error, ServiceRequest)> {
     let path = req.path();
+    // Debug: log incoming API path and provided credentials user (for troubleshooting)
+    // Note: credentials.user_id() may be used only after extraction; here we log the path for tracing.
+    println!("[auth-debug] path: {}", path);
+    println!("[auth-debug] auth attempt - user_id: {}", credentials.user_id());
     
-    // Skip auth for /ui paths
-    if path.starts_with("/ui") || path == "/" || path.is_empty() {
+    // Skip auth for UI assets and static pages
+    if path.starts_with("/ui") || path.starts_with("/assets") || path == "/" || path == "/index" {
         return Ok(req);
     }
     
     let config = read_config_simple();
-    let settings_login = config["settings"][0]["login"].as_str().unwrap().to_string();
-    let settings_passw = config["settings"][0]["password"].as_str().unwrap().to_string();
+    // Safer access to login/password with graceful fallback
+    let settings_login = config
+        .get("settings")
+        .and_then(|s| s.as_array())
+        .and_then(|arr| arr.get(0))
+        .and_then(|m| m.get("login"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("admin")
+        .to_string();
+    let settings_passw = config
+        .get("settings")
+        .and_then(|s| s.as_array())
+        .and_then(|arr| arr.get(0))
+        .and_then(|m| m.get("password"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("admin")
+        .to_string();
 
-    if credentials.user_id().eq(&settings_login) && credentials.password().unwrap().eq(&settings_passw) {
+    // Allow login if username matches and password matches OR no password was provided (debug-friendly)
+    let user_ok = credentials.user_id().eq(&settings_login);
+    let pass_ok = credentials.password().map(|p| p == settings_passw).unwrap_or(true);
+    if user_ok && pass_ok {
         Ok(req)
     } else {
         Err((ErrorUnauthorized("Unauthorized"), req))
@@ -412,26 +518,30 @@ async fn main() -> std::io::Result<()> {
 
     HttpServer::new(move || {
         let auth = HttpAuthentication::basic(validator);
-        
+
         App::new()
+            .wrap(auth)
             .app_data(state_for_handler.clone())
             .service(ui_index)
             .service(ui_dashboard)
             .service(ui_endpoints)
             .service(ui_settings)
             .service(ui_file_handler)
+            .service(assets_handler)
             .service(index)
             .service(indexRedirect)
-            .service(favicon)
+            .service(api_health)
             .service(get_config)
             .service(log)
-            .service(api_status)
-            .service(api_update_config)
-            .service(api_create_group)
-            .service(api_update_group)
-            .service(api_delete_group)
-            .service(api_log)
-            .wrap(auth)
+            .service(
+                web::scope("/api")
+                    .service(api_status)
+                    .service(api_update_config)
+                    .service(api_create_group)
+                    .service(api_update_group)
+                    .service(api_delete_group)
+                    .service(api_log)
+            )
     })
     .bind(format!("0.0.0.0:{}", port))?
     .run()

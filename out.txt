@@ -1,0 +1,9 @@
+bc-np 0.2.1. All rights reserved.
+Node: Test-pc
+Place: Home
+Description: Delete files from Temp directory
+http port: 8000
+Path: C:\Users\User\Documents\GitHub\bc-np
+*** Config changed, processing... ***
+--- Config check: 0 enabled endpoints ---
+No enabled endpoints, waiting for config change...
