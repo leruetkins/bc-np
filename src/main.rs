@@ -64,7 +64,7 @@ const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 
-use actix_web::{get, post, HttpResponse, App, HttpServer, web};
+use actix_web::{get, post, delete, HttpResponse, App, HttpServer, web};
 
 use actix_web::{dev::ServiceRequest, Error};
 use actix_web_httpauth::{extractors::basic::BasicAuth, middleware::HttpAuthentication};
@@ -104,34 +104,46 @@ async fn api_status(state: web::Data<AppState>) -> HttpResponse {
     let node_description = config["node"]["description"].as_str().unwrap_or("");
 
     let empty: Vec<serde_json::Value> = vec![];
-    let endpoints_raw = config["endpoints"].as_array().unwrap_or(&empty);
-    
+    let groups_raw = config["groups"].as_array().unwrap_or(&empty);
     let default_period = config["settings"][0]["period"].as_i64().unwrap_or(15);
-    let endpoints: Vec<_> = endpoints_raw.iter()
-        .map(|ep| {
-            let path = ep["path"].as_str().unwrap_or("");
-            let file_count = fs::read_dir(path).map(|d| d.count()).unwrap_or(0);
-            let free_space = get_free_space(path).unwrap_or(0) / 1_000_000_000;
-            let whole_space = get_whole_space(path).unwrap_or(0) / 1_000_000_000;
-            let period = ep["period"].as_i64().unwrap_or(default_period);
+    
+    let groups: Vec<_> = groups_raw.iter()
+        .map(|group| {
+            let group_name = group["name"].as_str().unwrap_or("Unnamed");
+            let endpoints_raw = group["endpoints"].as_array().unwrap_or(&empty);
+            
+            let endpoints: Vec<_> = endpoints_raw.iter()
+                .map(|ep| {
+                    let path = ep["path"].as_str().unwrap_or("");
+                    let file_count = fs::read_dir(path).map(|d| d.count()).unwrap_or(0);
+                    let free_space = get_free_space(path).unwrap_or(0) / 1_000_000_000;
+                    let whole_space = get_whole_space(path).unwrap_or(0) / 1_000_000_000;
+                    let period = ep["period"].as_i64().unwrap_or(default_period);
 
-            let filter: Vec<String> = ep["filter"]
-                .as_array()
-                .unwrap_or(&empty)
-                .iter()
-                .map(|v| v.as_str().unwrap_or("").to_string())
+                    let filter: Vec<String> = ep["filter"]
+                        .as_array()
+                        .unwrap_or(&empty)
+                        .iter()
+                        .map(|v| v.as_str().unwrap_or("").to_string())
+                        .collect();
+
+                    serde_json::json!({
+                        "name": ep["name"].as_str().unwrap_or(""),
+                        "path": path,
+                        "count": ep["count"].as_i64().unwrap_or(0),
+                        "enabled": ep["enabled"].as_bool().unwrap_or(false),
+                        "filter": filter,
+                        "period": period,
+                        "fileCount": file_count,
+                        "freeSpaceGb": free_space,
+                        "wholeSpaceGb": whole_space
+                    })
+                })
                 .collect();
 
             serde_json::json!({
-                "name": ep["name"].as_str().unwrap_or(""),
-                "path": path,
-                "count": ep["count"].as_i64().unwrap_or(0),
-                "enabled": ep["enabled"].as_bool().unwrap_or(false),
-                "filter": filter,
-                "period": period,
-                "fileCount": file_count,
-                "freeSpaceGb": free_space,
-                "wholeSpaceGb": whole_space
+                "name": group_name,
+                "endpoints": endpoints
             })
         })
         .collect();
@@ -143,7 +155,7 @@ async fn api_status(state: web::Data<AppState>) -> HttpResponse {
             "place": node_place,
             "description": node_description
         },
-        "endpoints": endpoints
+        "groups": groups
     });
 
     HttpResponse::Ok()
@@ -155,6 +167,12 @@ async fn api_status(state: web::Data<AppState>) -> HttpResponse {
 struct ConfigUpdate {
     node: Option<serde_json::Value>,
     settings: Option<Vec<serde_json::Value>>,
+    groups: Option<Vec<serde_json::Value>>,
+}
+
+#[derive(serde::Deserialize)]
+struct GroupUpdate {
+    name: Option<String>,
     endpoints: Option<Vec<serde_json::Value>>,
 }
 
@@ -171,8 +189,8 @@ async fn api_update_config(
     if let Some(settings) = config.settings.clone() {
         current_config["settings"] = serde_json::Value::Array(settings);
     }
-    if let Some(endpoints) = config.endpoints.clone() {
-        current_config["endpoints"] = serde_json::Value::Array(endpoints);
+    if let Some(groups) = config.groups.clone() {
+        current_config["groups"] = serde_json::Value::Array(groups);
     }
 
     // Update state
@@ -186,6 +204,87 @@ async fn api_update_config(
             HttpResponse::Ok().content_type("application/json").body(r#"{"status":"ok"}"#)
         },
         Err(e) => HttpResponse::InternalServerError().body(format!("Failed to write config: {}", e)),
+    }
+}
+
+#[post("/api/groups/{group_index}")]
+async fn api_update_group(
+    state: web::Data<AppState>,
+    group_index: web::Path<usize>,
+    group: actix_web::web::Json<GroupUpdate>
+) -> HttpResponse {
+    let mut current_config = state.get_config();
+    let idx = group_index.into_inner();
+    
+    let groups = current_config["groups"].as_array_mut().unwrap();
+    
+    if idx >= groups.len() {
+        return HttpResponse::NotFound().body("Group not found");
+    }
+    
+    let current_group = &mut groups[idx];
+    
+    if let Some(name) = group.name.clone() {
+        current_group["name"] = serde_json::Value::String(name);
+    }
+    if let Some(endpoints) = group.endpoints.clone() {
+        current_group["endpoints"] = serde_json::Value::Array(endpoints);
+    }
+
+    state.update_config(current_config.clone());
+    
+    let json_str = current_config.to_string();
+    match fs::write("config.json", &json_str) {
+        Ok(_) => HttpResponse::Ok().content_type("application/json").body(r#"{"status":"ok"}"#),
+        Err(e) => HttpResponse::InternalServerError().body(format!("Failed: {}", e)),
+    }
+}
+
+#[actix_web::delete("/api/groups/{group_index}")]
+async fn api_delete_group(
+    state: web::Data<AppState>,
+    group_index: web::Path<usize>
+) -> HttpResponse {
+    let mut current_config = state.get_config();
+    let idx = group_index.into_inner();
+    
+    let groups = current_config["groups"].as_array_mut().unwrap();
+    
+    if idx >= groups.len() {
+        return HttpResponse::NotFound().body("Group not found");
+    }
+    
+    groups.remove(idx);
+
+    state.update_config(current_config.clone());
+    
+    let json_str = current_config.to_string();
+    match fs::write("config.json", &json_str) {
+        Ok(_) => HttpResponse::Ok().content_type("application/json").body(r#"{"status":"ok"}"#),
+        Err(e) => HttpResponse::InternalServerError().body(format!("Failed: {}", e)),
+    }
+}
+
+#[post("/api/groups")]
+async fn api_create_group(
+    state: web::Data<AppState>,
+    group: actix_web::web::Json<GroupUpdate>
+) -> HttpResponse {
+    let mut current_config = state.get_config();
+    
+    let new_group = serde_json::json!({
+        "name": group.name.clone().unwrap_or_else(|| "New Group".to_string()),
+        "endpoints": group.endpoints.clone().unwrap_or_else(|| vec![])
+    });
+    
+    current_config["groups"].as_array_mut().unwrap().push(new_group);
+
+    state.update_config(current_config.clone());
+    
+    let json_str = current_config.to_string();
+match fs::write("config.json", &json_str) {
+        Ok(_) => HttpResponse::Ok().content_type("application/json").body(r#"{"status":"ok"}"#),
+        Err(e) => HttpResponse::InternalServerError().body(format!("Failed: {}", e)),
     }
 }
 
@@ -328,6 +427,9 @@ async fn main() -> std::io::Result<()> {
             .service(log)
             .service(api_status)
             .service(api_update_config)
+            .service(api_create_group)
+            .service(api_update_group)
+            .service(api_delete_group)
             .service(api_log)
             .wrap(auth)
     })
@@ -612,8 +714,9 @@ fn run_config_job(state: AppState) {
         
         let default_period = config["settings"][0]["period"].as_u64().unwrap_or(15);
         
-        let enabled_count_check = config["endpoints"].as_array().unwrap()
+        let enabled_count_check = config["groups"].as_array().unwrap()
             .iter()
+            .flat_map(|g| g["endpoints"].as_array().unwrap())
             .filter(|ep| ep["enabled"].as_bool().unwrap_or(false))
             .count();
         
@@ -622,66 +725,67 @@ fn run_config_job(state: AppState) {
         let mut enabled_count = 0;
         let mut message = String::new();
         let mut formatted_message = String::new();
-        for endpoint in config["endpoints"].as_array().unwrap() {
-            let name = endpoint["name"].as_str().unwrap();
-            let path = endpoint["path"].as_str().unwrap();
-            let max_count = endpoint["count"].as_i64().unwrap();
-            let is_enabled = endpoint["enabled"].as_bool().unwrap();
-            let _period = endpoint["period"].as_u64().unwrap_or(default_period);
-            let filter: Vec<String> = endpoint["filter"]
-                .as_array()
-                .unwrap_or(&Vec::new())
-                .iter()
-                .map(|value| value.as_str().unwrap_or_default().to_string())
-                .filter(|mask| !mask.is_empty())
-                .collect();
+        
+        for group in config["groups"].as_array().unwrap() {
+            let group_name = group["name"].as_str().unwrap_or("Unnamed");
+            for endpoint in group["endpoints"].as_array().unwrap() {
+                let name = endpoint["name"].as_str().unwrap();
+                let path = endpoint["path"].as_str().unwrap();
+                let max_count = endpoint["count"].as_i64().unwrap();
+                let is_enabled = endpoint["enabled"].as_bool().unwrap();
+                let _period = endpoint["period"].as_u64().unwrap_or(default_period);
+                let filter: Vec<String> = endpoint["filter"]
+                    .as_array()
+                    .unwrap_or(&Vec::new())
+                    .iter()
+                    .map(|value| value.as_str().unwrap_or_default().to_string())
+                    .filter(|mask| !mask.is_empty())
+                    .collect();
 
-
-            if is_enabled {
-                enabled_count += 1;
-                let files = match fs::read_dir(path) {
-                    Ok(dir) => dir,
-                    Err(_) => {
-                        println!("Endpoint: {}\nThere isn't such directory: {}", name, path);
-                        continue;
-                    }
-                };
-                let file_count = files.count();
-
-
-                if file_count > max_count.try_into().unwrap() {
-                    match delete_old_files(path, max_count, &filter, name) {
-                        Ok(msg) => {
-                            message.push_str(&msg);
+                if is_enabled {
+                    enabled_count += 1;
+                    let files = match fs::read_dir(path) {
+                        Ok(dir) => dir,
+                        Err(_) => {
+                            println!("Endpoint: {}\nThere isn't such directory: {}", name, path);
+                            continue;
                         }
-                        Err(e) => println!("Error deleting old files: {}", e),
-                    }
-                } else {
-                    let mut free_space_str = String::new();
-                    let mut whole_space_str = String::new();
-                    let mut whole_space_gb = 0;
-                    let mut free_space_gb = 0;
-                    let space_percent: f64;
+                    };
+                    let file_count = files.count();
 
-                    match get_whole_space(path) {
-                        Some(whole_space) => {
-                            whole_space_gb = whole_space / 1_000_000_000;
-                            whole_space_str = format!("{} GB", whole_space_gb);
+                    if file_count > max_count.try_into().unwrap() {
+                        match delete_old_files(path, max_count, &filter, name) {
+                            Ok(msg) => {
+                                message.push_str(&msg);
+                            }
+                            Err(e) => println!("Error deleting old files: {}", e),
                         }
-                        None => println!("Failed to get free space on {}", path),
-                    }
+                    } else {
+                        let mut free_space_str = String::new();
+                        let mut whole_space_str = String::new();
+                        let mut whole_space_gb = 0;
+                        let mut free_space_gb = 0;
+                        let space_percent: f64;
 
-                    match get_free_space(path) {
-                        Some(free_space) => {
-                            free_space_gb = free_space / 1_000_000_000;
-                            free_space_str = format!("{} GB", free_space_gb);
+                        match get_whole_space(path) {
+                            Some(whole_space) => {
+                                whole_space_gb = whole_space / 1_000_000_000;
+                                whole_space_str = format!("{} GB", whole_space_gb);
+                            }
+                            None => println!("Failed to get free space on {}", path),
                         }
-                        None => println!("Failed to get free space on {}", path),
-                    }
 
-                    space_percent = (free_space_gb as f64 / whole_space_gb as f64 * 100.0).round();
-                    let timestamp = Local::now().format("%d-%m-%Y %H:%M:%S").to_string();
-                    formatted_message = format!(
+                        match get_free_space(path) {
+                            Some(free_space) => {
+                                free_space_gb = free_space / 1_000_000_000;
+                                free_space_str = format!("{} GB", free_space_gb);
+                            }
+                            None => println!("Failed to get free space on {}", path),
+                        }
+
+                        space_percent = (free_space_gb as f64 / whole_space_gb as f64 * 100.0).round();
+                        let timestamp = Local::now().format("%d-%m-%Y %H:%M:%S").to_string();
+                        formatted_message = format!(
 r#"====================================
 {timestamp}
 ===================================
@@ -694,11 +798,11 @@ Nothing to delete ;)
 Free space: {free_space_str} ({space_percent}%)
 Total space: {whole_space_str}
 "#);
+                    }
+                    println!("{}", formatted_message);
+                    message += &formatted_message;
                 }
-                println!("{}", formatted_message);
-                message += &formatted_message;
             }
-
         }
         match write_to_log_file(&message) {
             Ok(_) => {},
@@ -713,8 +817,9 @@ Total space: {whole_space_str}
         }
         
         // Find min period among enabled endpoints
-        let min_period = config["endpoints"].as_array().unwrap()
+        let min_period = config["groups"].as_array().unwrap()
             .iter()
+            .flat_map(|g| g["endpoints"].as_array().unwrap())
             .filter(|ep| ep["enabled"].as_bool().unwrap_or(false))
             .map(|ep| ep["period"].as_u64().unwrap_or(default_period))
             .min()

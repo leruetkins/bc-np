@@ -222,10 +222,49 @@ a:hover {
 }
 
 .endpoints-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
   margin-top: 1rem;
+}
+
+.group-card {
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  border-radius: calc(var(--radius) + 4px);
+  padding: 1.5rem;
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+}
+
+.group-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+.group-header h3 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.group-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.endpoints-in-group {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1rem;
+}
+
+.group-card .empty {
+  color: hsl(var(--muted-foreground));
+  font-style: italic;
+  padding: 1rem;
 }
 
 .endpoint-card {
