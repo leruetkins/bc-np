@@ -1,21 +1,63 @@
 use chrono::prelude::*;
 use glob::Pattern;
-use once_cell::sync::Lazy;
 use std::convert::TryInto;
 use std::env;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::prelude::*;
 use std::path::Path;
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-fn read_config() -> serde_json::Value {
-    let config = fs::read_to_string("config.json").expect("Unable to read config");
-    serde_json::from_str(&config).expect("Invalid JSON format")
+struct AppStateInner {
+    config: Mutex<serde_json::Value>,
+    updated: Mutex<bool>,
 }
 
-static CONFIG_JSON: Lazy<serde_json::Value> = Lazy::new(|| read_config());
+#[derive(Clone)]
+struct AppState {
+    inner: std::sync::Arc<AppStateInner>,
+}
+
+impl AppState {
+    fn new() -> Self {
+        let config = fs::read_to_string("config.json")
+            .map(|c| serde_json::from_str(&c).ok())
+            .unwrap_or(None)
+            .unwrap_or_else(|| serde_json::json!({
+                "node": {"name": "Unknown"},
+                "settings": [],
+                "endpoints": []
+            }));
+        
+        Self {
+            inner: std::sync::Arc::new(AppStateInner {
+                config: Mutex::new(config),
+                updated: Mutex::new(false),
+            }),
+        }
+    }
+    
+    fn get_config(&self) -> serde_json::Value {
+        self.inner.config.lock().unwrap().clone()
+    }
+    
+    fn update_config(&self, new_config: serde_json::Value) {
+        *self.inner.config.lock().unwrap() = new_config;
+        *self.inner.updated.lock().unwrap() = true;
+    }
+    
+    fn was_updated(&self) -> bool {
+        let mut updated = self.inner.updated.lock().unwrap();
+        if *updated {
+            *updated = false;
+            true
+        } else {
+            false
+        }
+    }
+}
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -54,10 +96,8 @@ async fn log() -> HttpResponse {
 }
 
 #[get("/api/status")]
-async fn api_status() -> HttpResponse {
-    let config = read_config();
-    
-    let node_name = config["node"]["name"].as_str().unwrap_or("Unknown");
+async fn api_status(state: web::Data<AppState>) -> HttpResponse {
+    let config = state.get_config();
     
     let node_name = config["node"]["name"].as_str().unwrap_or("Unknown");
     let node_place = config["node"]["place"].as_str().unwrap_or("");
@@ -116,14 +156,11 @@ struct ConfigUpdate {
 }
 
 #[post("/api/config")]
-async fn api_update_config(config: actix_web::web::Json<ConfigUpdate>) -> HttpResponse {
-    let mut current_config = match fs::read_to_string("config.json") {
-        Ok(c) => match serde_json::from_str::<serde_json::Value>(&c) {
-            Ok(v) => v,
-            Err(_) => return HttpResponse::BadRequest().body("Invalid config format"),
-        },
-        Err(_) => return HttpResponse::NotFound().body("Config file not found"),
-    };
+async fn api_update_config(
+    state: web::Data<AppState>,
+    config: actix_web::web::Json<ConfigUpdate>
+) -> HttpResponse {
+    let mut current_config = state.get_config();
 
     if let Some(node) = config.node.clone() {
         current_config["node"] = node;
@@ -135,10 +172,14 @@ async fn api_update_config(config: actix_web::web::Json<ConfigUpdate>) -> HttpRe
         current_config["endpoints"] = serde_json::Value::Array(endpoints);
     }
 
-    match fs::write("config.json", current_config.to_string()) {
+    // Update state
+    state.update_config(current_config.clone());
+    
+    // Also save to file
+    let json_str = current_config.to_string();
+    match fs::write("config.json", &json_str) {
         Ok(_) => {
-            // Force lazy to reload
-            let _ = Lazy::force(&CONFIG_JSON);
+            println!("Config updated and state notified");
             HttpResponse::Ok().content_type("application/json").body(r#"{"status":"ok"}"#)
         },
         Err(e) => HttpResponse::InternalServerError().body(format!("Failed to write config: {}", e)),
@@ -161,8 +202,8 @@ async fn index() -> HttpResponse {
 }
 
 #[get("/index")]
-async fn indexRedirect() -> HttpResponse {
-    let config = Lazy::force(&CONFIG_JSON);
+async fn indexRedirect(state: web::Data<AppState>) -> HttpResponse {
+    let config = state.get_config();
     let node_name = config["node"]["name"].as_str().unwrap();
 
     let html = format!(
@@ -214,6 +255,11 @@ async fn ui_index() -> HttpResponse {
     serve_ui_file("login.html")
 }
 
+fn read_config_simple() -> serde_json::Value {
+    let config = fs::read_to_string("config.json").expect("Unable to read config");
+    serde_json::from_str(&config).expect("Invalid JSON format")
+}
+
 async fn validator(
     req: ServiceRequest,
     credentials: BasicAuth,
@@ -225,7 +271,7 @@ async fn validator(
         return Ok(req);
     }
     
-    let config = read_config();
+    let config = read_config_simple();
     let settings_login = config["settings"][0]["login"].as_str().unwrap().to_string();
     let settings_passw = config["settings"][0]["password"].as_str().unwrap().to_string();
 
@@ -238,14 +284,20 @@ async fn validator(
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let config = read_config();
-    let port = config["settings"][0]["port"].as_u64().unwrap_or(8000) as u16;
-    thread::spawn(|| run_config_job());
+    let state = AppState::new();
+    let port = state.get_config()["settings"][0]["port"].as_u64().unwrap_or(8000) as u16;
+    
+    let state_clone = state.clone();
+    thread::spawn(move || run_config_job(state_clone));
+
+    let state_web = web::Data::new(state);
+    let state_for_handler = state_web.clone();
 
     HttpServer::new(move || {
         let auth = HttpAuthentication::basic(validator);
         
         App::new()
+            .app_data(state_for_handler.clone())
             .service(ui_index)
             .service(ui_file_handler)
             .service(index)
@@ -488,11 +540,12 @@ Total space: {whole_space_str}
     Ok(message)
 }
 
-fn run_config_job() {
+fn run_config_job(state: AppState) {
     let current_dir = env::current_dir().unwrap();
 
-    let config = Lazy::force(&CONFIG_JSON);
-    let period = config["settings"][0]["period"].as_u64().unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+
+    let config = state.get_config();
     let port = config["settings"][0]["port"].as_u64().unwrap_or(8000);
 
     let node_name = config["node"]["name"].as_str().unwrap();
@@ -509,11 +562,40 @@ fn run_config_job() {
         current_dir.display()
     );
 
-    std::thread::sleep(Duration::from_secs(5));
+    std::thread::sleep(Duration::from_secs(3));
+
+    let mut running = true;
+    let mut last_config_str = String::new();
 
     loop {
-        let config = Lazy::force(&CONFIG_JSON);
+        // Check if config was updated
+        if state.was_updated() {
+            println!("*** Config changed! Reloading... ***");
+        }
+        
+        let config = state.get_config();
+        let config_str = config.to_string();
+        
+        // Only process if config changed
+        if config_str != last_config_str {
+            println!("*** Config changed, processing... ***");
+            last_config_str = config_str;
+            running = true;
+        }
+        
+        if !running {
+            std::thread::sleep(Duration::from_secs(2));
+            continue;
+        }
+        
         let period = config["settings"][0]["period"].as_u64().unwrap();
+        
+        let enabled_count_check = config["endpoints"].as_array().unwrap()
+            .iter()
+            .filter(|ep| ep["enabled"].as_bool().unwrap_or(false))
+            .count();
+        
+        println!("--- Config check: {} enabled endpoints (period={}) ---", enabled_count_check, period);
         
         let mut enabled_count = 0;
         let mut message = String::new();
@@ -599,10 +681,14 @@ Total space: {whole_space_str}
             Ok(_) => {},
             Err(err) => eprintln!("Error to write to log file: {:?}", err),
         }
+        
         if enabled_count == 0 {
-            println!("There are no activated endpoints. Turn on at least one and restart app.");
-            break
+            println!("No enabled endpoints, waiting for config change...");
+            running = false;
+            std::thread::sleep(Duration::from_secs(3));
+            continue;
         }
+        
         std::thread::sleep(Duration::from_secs(period));
     }
 }
