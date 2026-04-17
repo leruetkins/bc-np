@@ -67,18 +67,18 @@ async function loadEndpoints() {
     currentConfig = { node: data.node, groups: data.groups };
 
     document.getElementById('endpoints-list').innerHTML = data.groups.map((group, gi) => `
-        <div class="group-card">
+        <div class="group-card" ondragover="allowDrop(event)" ondrop="dropToGroup(event, ${gi})">
             <div class="group-header">
-                <h3>${group.name}</h3>
+                <h3 onclick="toggleGroup(${gi})" style="cursor: pointer;">${group.name} <span class="badge">${group.endpoints.length}</span> <span class="collapse-icon">▼</span></h3>
                 <div class="group-actions">
-                    <button class="btn btn-sm btn-outline" onclick="editGroup(${gi})">Rename</button>
-                    <button class="btn btn-sm btn-success" onclick="showAddEndpointForm(${gi})">+ Endpoint</button>
-                    <button class="btn btn-sm btn-outline btn-danger" onclick="deleteGroup(${gi})">Delete</button>
+                    <button class="btn btn-sm btn-outline" onclick="event.stopPropagation(); editGroup(${gi})">Rename</button>
+                    <button class="btn btn-sm btn-success" onclick="event.stopPropagation(); showAddEndpointForm(${gi})">+ Endpoint</button>
+                    <button class="btn btn-sm btn-outline btn-danger" onclick="event.stopPropagation(); deleteGroup(${gi})">Delete</button>
                 </div>
             </div>
-            <div class="endpoints-in-group">
-                ${group.endpoints.length === 0 ? '<p class="empty">No endpoints</p>' : group.endpoints.map((ep, ei) => `
-                    <div class="endpoint-card ${ep.enabled ? 'enabled' : 'disabled'}">
+            <div class="endpoints-in-group" ondragover="allowDrop(event); event.stopPropagation();" ondrop="dropToGroup(event, ${gi})">
+                ${group.endpoints.length === 0 ? '<p class="empty">No endpoints (drag here)</p>' : group.endpoints.map((ep, ei) => `
+                    <div class="endpoint-card ${ep.enabled ? 'enabled' : 'disabled'}" draggable="true" ondragstart="dragEndpoint(event, ${gi}, ${ei})">
                         <div class="ep-header">
                             <h4>${ep.name}</h4>
                             <span class="status-badge ${ep.enabled ? 'active' : 'inactive'}">${ep.enabled ? 'Active' : 'Inactive'}</span>
@@ -93,6 +93,7 @@ async function loadEndpoints() {
                         <div class="actions">
                             <button class="btn btn-sm ${ep.enabled ? 'btn-warning' : 'btn-success'}" onclick="toggleEndpoint(${gi}, ${ei})">${ep.enabled ? 'Disable' : 'Enable'}</button>
                             <button class="btn btn-sm btn-outline" onclick="editEndpoint(${gi}, ${ei})">Edit</button>
+                            <button class="btn btn-sm btn-outline" onclick="moveToGroup(${gi}, ${ei})">Move</button>
                             <button class="btn btn-sm btn-outline btn-danger" onclick="deleteEndpoint(${gi}, ${ei})">Delete</button>
                         </div>
                     </div>
@@ -151,6 +152,11 @@ function editEndpoint(gi, ei) {
     document.getElementById('modal').style.display = 'block';
 }
 
+function toggleGroup(gi) {
+    const cards = document.querySelectorAll('.group-card');
+    cards[gi].classList.toggle('collapsed');
+}
+
 function editGroup(gi) {
     const newName = prompt('Enter new group name:', currentConfig.groups[gi].name);
     if (!newName) return;
@@ -166,11 +172,11 @@ function deleteGroup(gi) {
     loadEndpoints();
 }
 
-function addGroup() {
+async function addGroup() {
     const name = prompt('Enter new group name:');
     if (!name) return;
     currentConfig.groups.push({ name: name, endpoints: [] });
-    apiCall('/api/config', 'POST', { groups: currentConfig.groups });
+    await apiCall('/api/config', 'POST', { groups: currentConfig.groups });
     loadEndpoints();
 }
 
@@ -188,6 +194,62 @@ async function toggleEndpoint(gi, ei) {
 async function deleteEndpoint(gi, ei) {
     if (!confirm('Delete this endpoint?')) return;
     currentConfig.groups[gi].endpoints.splice(ei, 1);
+    await apiCall('/api/config', 'POST', { groups: currentConfig.groups });
+    loadEndpoints();
+}
+
+let draggedFromGroup = -1;
+let draggedFromEndpoint = -1;
+
+function dragEndpoint(event, gi, ei) {
+    draggedFromGroup = gi;
+    draggedFromEndpoint = ei;
+    event.dataTransfer.setData('text/plain', JSON.stringify({gi, ei}));
+    event.target.style.opacity = '0.5';
+}
+
+function allowDrop(event) {
+    event.preventDefault();
+}
+
+async function dropToGroup(event, targetGi) {
+    event.preventDefault();
+    if (draggedFromGroup < 0 || draggedFromEndpoint < 0) return;
+    if (draggedFromGroup === targetGi) {
+        loadEndpoints();
+        return;
+    }
+    
+    const endpoint = currentConfig.groups[draggedFromGroup].endpoints[draggedFromEndpoint];
+    currentConfig.groups[draggedFromGroup].endpoints.splice(draggedFromEndpoint, 1);
+    currentConfig.groups[targetGi].endpoints.push(endpoint);
+    
+    await apiCall('/api/config', 'POST', { groups: currentConfig.groups });
+    loadEndpoints();
+    
+    draggedFromGroup = -1;
+    draggedFromEndpoint = -1;
+}
+
+async function moveToGroup(gi, ei) {
+    const groups = currentConfig.groups.map((g, i) => `${i}: ${g.name}`).join('\n');
+    const targetGi = prompt(`Enter group number to move to:\n${groups}`);
+    if (targetGi === null) return;
+    
+    const targetIndex = parseInt(targetGi);
+    if (isNaN(targetIndex) || targetIndex < 0 || targetIndex >= currentConfig.groups.length) {
+        alert('Invalid group number');
+        return;
+    }
+    if (targetIndex === gi) {
+        alert('Already in this group');
+        return;
+    }
+    
+    const endpoint = currentConfig.groups[gi].endpoints[ei];
+    currentConfig.groups[gi].endpoints.splice(ei, 1);
+    currentConfig.groups[targetIndex].endpoints.push(endpoint);
+    
     await apiCall('/api/config', 'POST', { groups: currentConfig.groups });
     loadEndpoints();
 }

@@ -267,6 +267,31 @@ a:hover {
   padding: 1rem;
 }
 
+.group-card.collapsed .endpoints-in-group {
+  display: none;
+}
+
+.collapse-icon {
+  display: inline-block;
+  font-size: 0.75rem;
+  margin-left: 0.5rem;
+  transition: transform 0.2s ease;
+}
+
+.group-header .badge {
+  display: inline-block;
+  background: hsl(var(--muted));
+  color: hsl(var(--muted-foreground));
+  font-size: 0.75rem;
+  padding: 0.125rem 0.5rem;
+  border-radius: 9999px;
+  margin-left: 0.5rem;
+}
+
+.group-card.collapsed .collapse-icon {
+  transform: rotate(-90deg);
+}
+
 .endpoint-card {
   background: hsl(var(--card));
   border: 1px solid hsl(var(--border));
