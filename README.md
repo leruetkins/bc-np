@@ -17,6 +17,12 @@ Before running the program, modify the config.json file to suit your needs:
 
 **filter** - excludes files with extension by mask, entire files or folders from deletion.
 
+**type** - endpoint type: `local` for local/network path, `ssh` for remote cleanup over SSH
+
+**host** - SSH host alias from `~/.ssh/config` when `type` is `ssh`; the UI dropdown shows only `Host` entries from this file
+
+For SSH endpoints the app uses the system `ssh.exe` and existing OpenSSH keys/config from the current user profile. Remote cleanup expects a Linux server with `bash`, `find`, `sort`, `awk`, `wc`, `rm`, and `df` available.
+
 Once started, you can open http server on port 8000 to see configuration file or log file http://localhost:8000
 
 You can install bc-np as system service using **nssm** https://nssm.cc/download

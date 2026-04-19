@@ -6,6 +6,7 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::prelude::*;
 use std::path::Path;
+use std::process::Command;
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
@@ -61,10 +62,496 @@ impl AppState {
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+fn endpoint_type(endpoint: &serde_json::Value) -> &str {
+    endpoint["type"].as_str().unwrap_or("local")
+}
+
+fn endpoint_host(endpoint: &serde_json::Value) -> &str {
+    endpoint["host"].as_str().unwrap_or("")
+}
+
+fn endpoint_label(name: &str, endpoint_type: &str, host: &str) -> String {
+    if endpoint_type == "ssh" && !host.is_empty() {
+        format!("{name} (ssh:{host})")
+    } else {
+        name.to_string()
+    }
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn build_remote_target_resolution_script(path: &str) -> String {
+    format!(
+        "TARGET={}\n\
+TARGET_RESOLVED=\"$TARGET\"\n\
+case \"$TARGET\" in\n\
+  \"~\")\n\
+    TARGET_RESOLVED=\"$HOME\"\n\
+    ;;\n\
+  \"~/\"*)\n\
+    TARGET_RESOLVED=\"$HOME/${{TARGET#\\~/}}\"\n\
+    ;;\n\
+esac\n",
+        shell_single_quote(path)
+    )
+}
+
+fn build_remote_cleanup_script(path: &str, max_count: i64, filter: &[String], name: &str) -> String {
+    let mut script = String::from(
+        "set -eu\n\
+shopt -s nullglob\n",
+    );
+    script.push_str(&build_remote_target_resolution_script(path));
+    script.push_str(&format!("ENDPOINT_NAME={}\n", shell_single_quote(name)));
+    script.push_str(&format!("MAX_COUNT={}\n", max_count.max(0)));
+
+    for (idx, mask) in filter.iter().filter(|mask| !mask.is_empty()).enumerate() {
+        script.push_str(&format!("FILTER_{idx}={}\n", shell_single_quote(mask)));
+    }
+
+    script.push_str(
+        r#"
+echo "SSH debug: whoami=$(whoami)"
+echo "SSH debug: pwd=$(pwd)"
+echo "SSH debug: home=$HOME"
+echo "SSH debug: target_raw=$TARGET"
+echo "SSH debug: target_resolved=$TARGET_RESOLVED"
+if [ -e "$TARGET_RESOLVED" ]; then
+  echo "SSH debug: target_exists=yes"
+  ls -ld "$TARGET_RESOLVED" 2>/dev/null || true
+else
+  echo "SSH debug: target_exists=no"
+fi
+
+if [ ! -d "$TARGET_RESOLVED" ]; then
+  echo "Failed to read directory: $TARGET_RESOLVED"
+  exit 2
+fi
+
+entries=()
+while IFS= read -r -d '' row; do
+  entries+=("$row")
+done < <(find "$TARGET_RESOLVED" -mindepth 1 -maxdepth 1 -printf '%T@|%P\0' | sort -z -r -n)
+
+filtered=()
+for row in "${entries[@]}"; do
+  name="${row#*|}"
+  skip=0
+"#,
+    );
+
+    for (idx, mask) in filter.iter().filter(|mask| !mask.is_empty()).enumerate() {
+        script.push_str(&format!(
+            "  if [[ \"$name\" == $FILTER_{idx} ]]; then skip=1; fi\n"
+        ));
+        if !mask.contains('*') && !mask.contains('?') && !mask.contains('[') {
+            script.push_str(&format!(
+                "  if [[ \"$name\" == *.* && \"${{name##*.}}\" == {} ]]; then skip=1; fi\n",
+                shell_single_quote(mask)
+            ));
+        }
+    }
+
+    script.push_str(
+        r#"
+  if [ "$skip" -eq 0 ]; then
+    filtered+=("$row")
+  fi
+done
+
+deleted_files=()
+deleted_dirs=()
+index=0
+for row in "${filtered[@]}"; do
+  if [ "$index" -lt "$MAX_COUNT" ]; then
+    index=$((index + 1))
+    continue
+  fi
+
+  name="${row#*|}"
+  full_path="$TARGET_RESOLVED/$name"
+  if [ -d "$full_path" ]; then
+    if rm -rf -- "$full_path"; then
+      deleted_dirs+=("$name")
+    fi
+  else
+    if rm -f -- "$full_path"; then
+      deleted_files+=("$name")
+    fi
+  fi
+  index=$((index + 1))
+done
+
+remaining_files=$(find "$TARGET_RESOLVED" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')
+remaining_dirs=$(find "$TARGET_RESOLVED" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+filtered_count=${#filtered[@]}
+deleted_files_count=${#deleted_files[@]}
+deleted_dirs_count=${#deleted_dirs[@]}
+timestamp=$(date '+%d-%m-%Y %H:%M:%S')
+
+free_space="n/a"
+total_space="n/a"
+space_percent="n/a"
+if df_line=$(df -BG "$TARGET_RESOLVED" 2>/dev/null | tail -n 1); then
+  total_space=$(printf '%s' "$df_line" | awk '{print $2}')
+  free_space=$(printf '%s' "$df_line" | awk '{print $4}')
+  space_percent=$(printf '%s' "$df_line" | awk '{print $5}')
+fi
+
+printf '====================================\n'
+printf '%s\n' "$timestamp"
+printf '===================================\n'
+printf 'Endpoint: %s\n' "$ENDPOINT_NAME"
+printf 'Path: %s\n' "$TARGET_RESOLVED"
+printf 'Max count: %s\n' "$MAX_COUNT"
+printf 'Filter: '"#,
+    );
+    script.push_str(&shell_single_quote(&format!("{filter:?}")));
+    script.push_str(
+        r#"
+printf '\n'
+
+if [ "$filtered_count" -le "$MAX_COUNT" ]; then
+  printf 'Files: %s\n' "$filtered_count"
+  printf 'Nothing to delete ;)\n'
+else
+  printf 'Deleted %s files' "$deleted_files_count"
+  if [ "$deleted_files_count" -gt 0 ]; then
+    printf ':\n'
+    printf '%s\n' "${deleted_files[@]}"
+  else
+    printf '\n'
+  fi
+
+  printf 'Deleted %s folders' "$deleted_dirs_count"
+  if [ "$deleted_dirs_count" -gt 0 ]; then
+    printf ':\n'
+    printf '%s\n' "${deleted_dirs[@]}"
+  else
+    printf '\n'
+  fi
+fi
+
+printf 'Remaining files: %s\n' "$remaining_files"
+printf 'Remaining folders: %s\n' "$remaining_dirs"
+printf 'Free space: %s (%s)\n' "$free_space" "$space_percent"
+printf 'Total space: %s\n' "$total_space"
+ "#,
+    );
+
+    script
+}
+
+fn build_remote_status_script(path: &str) -> String {
+    let mut script = String::from(
+        "set -eu\n\
+shopt -s nullglob\n",
+    );
+    script.push_str(&build_remote_target_resolution_script(path));
+    script.push_str(
+        r#"
+if [ ! -d "$TARGET_RESOLVED" ]; then
+  printf 'ok=0\n'
+  printf 'error=%s\n' "Failed to read directory: $TARGET_RESOLVED"
+  exit 0
+fi
+
+files=$(find "$TARGET_RESOLVED" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')
+remaining_files=$(find "$TARGET_RESOLVED" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')
+remaining_dirs=$(find "$TARGET_RESOLVED" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+free_space="n/a"
+total_space="n/a"
+space_percent="n/a"
+if df_line=$(df -BG "$TARGET_RESOLVED" 2>/dev/null | tail -n 1); then
+  total_space=$(printf '%s' "$df_line" | awk '{print $2}')
+  free_space=$(printf '%s' "$df_line" | awk '{print $4}')
+  space_percent=$(printf '%s' "$df_line" | awk '{print $5}')
+fi
+
+printf 'ok=1\n'
+printf 'resolved_path=%s\n' "$TARGET_RESOLVED"
+printf 'file_count=%s\n' "$files"
+printf 'remaining_files=%s\n' "$remaining_files"
+printf 'remaining_dirs=%s\n' "$remaining_dirs"
+printf 'free_space=%s\n' "$free_space"
+printf 'total_space=%s\n' "$total_space"
+printf 'space_percent=%s\n' "$space_percent"
+"#,
+    );
+    script
+}
+
+fn run_ssh_script(host: &str, script: &str) -> Result<(String, String, std::process::ExitStatus), String> {
+    let remote_command = format!("bash -lc {}", shell_single_quote(script));
+    let output = Command::new("ssh")
+        .args([
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=15",
+            host,
+            &remote_command,
+        ])
+        .output()
+        .map_err(|err| format!("Failed to execute ssh: {}", err))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Ok((stdout, stderr, output.status))
+}
+
+fn delete_old_files_over_ssh(
+    host: &str,
+    path: &str,
+    max_count: i64,
+    filter: &[String],
+    name: &str,
+) -> Result<String, String> {
+    if host.trim().is_empty() {
+        return Err("SSH endpoint host is empty".to_string());
+    }
+
+    let remote_script = build_remote_cleanup_script(path, max_count, filter, name);
+    let (stdout, stderr, status) = run_ssh_script(host, &remote_script)?;
+
+    if status.success() {
+        Ok(stdout)
+    } else {
+        if !stderr.is_empty() && !stdout.is_empty() {
+            Err(format!(
+                "ssh exited with status {}\nstdout:\n{}\nstderr:\n{}",
+                status, stdout, stderr
+            ))
+        } else if !stderr.is_empty() {
+            Err(format!("ssh exited with status {}\nstderr:\n{}", status, stderr))
+        } else if !stdout.is_empty() {
+            Err(format!("ssh exited with status {}\nstdout:\n{}", status, stdout))
+        } else {
+            Err(format!("ssh exited with status {}", status))
+        }
+    }
+}
+
+fn parse_space_gb(value: &str) -> Option<u64> {
+    let trimmed = value.trim();
+    if trimmed.eq_ignore_ascii_case("n/a") || trimmed.is_empty() {
+        return None;
+    }
+    let digits = trimmed.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+    digits.parse::<u64>().ok()
+}
+
+fn ssh_endpoint_status(host: &str, path: &str) -> serde_json::Value {
+    if host.trim().is_empty() {
+        return serde_json::json!({
+            "path": path,
+            "fileCount": serde_json::Value::Null,
+            "remainingFiles": serde_json::Value::Null,
+            "remainingDirs": serde_json::Value::Null,
+            "freeSpaceGb": serde_json::Value::Null,
+            "wholeSpaceGb": serde_json::Value::Null,
+            "spacePercent": serde_json::Value::Null,
+            "statusError": "SSH host is empty"
+        });
+    }
+
+    let script = build_remote_status_script(path);
+    let (stdout, stderr, status) = match run_ssh_script(host, &script) {
+        Ok(result) => result,
+        Err(err) => {
+            return serde_json::json!({
+                "path": path,
+                "fileCount": serde_json::Value::Null,
+                "remainingFiles": serde_json::Value::Null,
+                "remainingDirs": serde_json::Value::Null,
+                "freeSpaceGb": serde_json::Value::Null,
+                "wholeSpaceGb": serde_json::Value::Null,
+                "spacePercent": serde_json::Value::Null,
+                "statusError": err
+            });
+        }
+    };
+
+    if !status.success() {
+        return serde_json::json!({
+            "path": path,
+            "fileCount": serde_json::Value::Null,
+            "remainingFiles": serde_json::Value::Null,
+            "remainingDirs": serde_json::Value::Null,
+            "freeSpaceGb": serde_json::Value::Null,
+            "wholeSpaceGb": serde_json::Value::Null,
+            "spacePercent": serde_json::Value::Null,
+            "statusError": if !stderr.is_empty() { stderr } else { format!("ssh exited with status {}", status) }
+        });
+    }
+
+    let mut values = std::collections::HashMap::new();
+    for line in stdout.lines() {
+        if let Some((key, value)) = line.split_once('=') {
+            values.insert(key.trim().to_string(), value.trim().to_string());
+        }
+    }
+
+    let ok = values.get("ok").map(|v| v == "1").unwrap_or(false);
+    let resolved_path = values.get("resolved_path").cloned().unwrap_or_else(|| path.to_string());
+    let status_error = if ok {
+        serde_json::Value::Null
+    } else {
+        serde_json::json!(values.get("error").cloned().unwrap_or_else(|| "Unknown SSH status error".to_string()))
+    };
+
+    serde_json::json!({
+        "path": resolved_path,
+        "fileCount": values.get("file_count").and_then(|v| v.parse::<u64>().ok()),
+        "remainingFiles": values.get("remaining_files").and_then(|v| v.parse::<u64>().ok()),
+        "remainingDirs": values.get("remaining_dirs").and_then(|v| v.parse::<u64>().ok()),
+        "freeSpaceGb": values.get("free_space").and_then(|v| parse_space_gb(v)),
+        "wholeSpaceGb": values.get("total_space").and_then(|v| parse_space_gb(v)),
+        "spacePercent": values.get("space_percent").cloned(),
+        "statusError": status_error
+    })
+}
+
+fn normalize_ssh_config_host(host: &str) -> Option<String> {
+    let trimmed = host.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.contains('*') || trimmed.contains('?') || trimmed.starts_with('!') {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+fn ssh_config_candidates() -> Vec<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Ok(profile) = env::var("USERPROFILE") {
+        candidates.push(Path::new(&profile).join(".ssh").join("config"));
+    }
+    if let Ok(home) = env::var("HOME") {
+        candidates.push(Path::new(&home).join(".ssh").join("config"));
+    }
+    if let (Ok(home_drive), Ok(home_path)) = (env::var("HOMEDRIVE"), env::var("HOMEPATH")) {
+        candidates.push(Path::new(&format!("{home_drive}{home_path}")).join(".ssh").join("config"));
+    }
+
+    let mut unique = std::collections::HashSet::new();
+    candidates
+        .into_iter()
+        .filter(|path| unique.insert(path.clone()))
+        .collect()
+}
+
+fn read_ssh_config_hosts_with_debug(debug: bool) -> Vec<String> {
+    let mut hosts = std::collections::BTreeSet::new();
+    let candidates = ssh_config_candidates();
+
+    if debug {
+        println!("--- SSH config debug start ---");
+        println!("USERPROFILE = {:?}", env::var("USERPROFILE").ok());
+        println!("HOME = {:?}", env::var("HOME").ok());
+        println!("HOMEDRIVE = {:?}", env::var("HOMEDRIVE").ok());
+        println!("HOMEPATH = {:?}", env::var("HOMEPATH").ok());
+        for path in &candidates {
+            println!("SSH config candidate: {}", path.display());
+        }
+    }
+
+    let mut selected_path = None;
+    let mut contents = None;
+    for path in candidates {
+        match fs::read(&path) {
+            Ok(file_bytes) => {
+                let file_contents = String::from_utf8_lossy(&file_bytes).into_owned();
+                if debug {
+                    println!(
+                        "SSH config loaded from {} ({} bytes, decoded with UTF-8 lossy)",
+                        path.display(),
+                        file_bytes.len()
+                    );
+                }
+                selected_path = Some(path);
+                contents = Some(file_contents);
+                break;
+            }
+            Err(err) => {
+                if debug {
+                    println!("SSH config read failed for {}: {}", path.display(), err);
+                }
+            }
+        }
+    }
+
+    let contents = match contents {
+        Some(contents) => contents,
+        None => {
+            if debug {
+                println!("SSH config was not found in any candidate path");
+                println!("--- SSH config debug end ---");
+            }
+            return vec![];
+        }
+    };
+
+    for (line_no, line) in contents.lines().enumerate() {
+        let trimmed = line.split('#').next().unwrap_or("").trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        let mut parts = trimmed.split_whitespace();
+        let directive = match parts.next() {
+            Some(value) => value,
+            None => continue,
+        };
+
+        if !directive.eq_ignore_ascii_case("Host") {
+            continue;
+        }
+
+        if debug {
+            println!("SSH config line {} matched Host: {}", line_no + 1, line);
+        }
+
+        for raw_host in parts {
+            if let Some(host) = normalize_ssh_config_host(raw_host) {
+                if debug {
+                    println!("  accepted host alias: {}", host);
+                }
+                hosts.insert(host);
+            } else if debug {
+                println!("  skipped host token: {}", raw_host);
+            }
+        }
+    }
+
+    let result: Vec<String> = hosts.into_iter().collect();
+    if debug {
+        println!(
+            "SSH config parse result from {}: {} host(s)",
+            selected_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+            result.len()
+        );
+        println!("SSH config hosts: {:?}", result);
+        println!("--- SSH config debug end ---");
+    }
+    result
+}
+
+fn read_ssh_config_hosts() -> Vec<String> {
+    read_ssh_config_hosts_with_debug(false)
+}
+
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 
-use actix_web::{get, post, delete, HttpResponse, App, HttpServer, web, HttpRequest};
+use actix_web::{get, post, HttpResponse, App, HttpServer, web, HttpRequest};
 
 use actix_web::{dev::ServiceRequest, Error};
 use actix_web_httpauth::{extractors::basic::BasicAuth, middleware::HttpAuthentication};
@@ -186,11 +673,24 @@ async fn api_status(state: web::Data<AppState>) -> HttpResponse {
             
             let endpoints: Vec<_> = endpoints_raw.iter()
                 .map(|ep| {
-                    let path = ep["path"].as_str().unwrap_or("");
-                    let file_count = fs::read_dir(path).map(|d| d.count()).unwrap_or(0);
-                    let free_space = get_free_space(path).unwrap_or(0) / 1_000_000_000;
-                    let whole_space = get_whole_space(path).unwrap_or(0) / 1_000_000_000;
+                    let endpoint_type = endpoint_type(ep);
+                    let host = endpoint_host(ep);
+                    let configured_path = ep["path"].as_str().unwrap_or("");
                     let period = ep["period"].as_i64().unwrap_or(default_period);
+                    let stats = if endpoint_type == "ssh" {
+                        ssh_endpoint_status(host, configured_path)
+                    } else {
+                        serde_json::json!({
+                            "path": configured_path,
+                            "fileCount": fs::read_dir(configured_path).map(|d| d.count()).unwrap_or(0),
+                            "remainingFiles": serde_json::Value::Null,
+                            "remainingDirs": serde_json::Value::Null,
+                            "freeSpaceGb": get_free_space(configured_path).unwrap_or(0) / 1_000_000_000,
+                            "wholeSpaceGb": get_whole_space(configured_path).unwrap_or(0) / 1_000_000_000,
+                            "spacePercent": serde_json::Value::Null,
+                            "statusError": serde_json::Value::Null
+                        })
+                    };
 
                     let filter: Vec<String> = ep["filter"]
                         .as_array()
@@ -201,14 +701,20 @@ async fn api_status(state: web::Data<AppState>) -> HttpResponse {
 
                     serde_json::json!({
                         "name": ep["name"].as_str().unwrap_or(""),
-                        "path": path,
+                        "type": endpoint_type,
+                        "host": host,
+                        "path": stats["path"].clone(),
                         "count": ep["count"].as_i64().unwrap_or(0),
                         "enabled": ep["enabled"].as_bool().unwrap_or(false),
                         "filter": filter,
                         "period": period,
-                        "fileCount": file_count,
-                        "freeSpaceGb": free_space,
-                        "wholeSpaceGb": whole_space
+                        "fileCount": stats["fileCount"].clone(),
+                        "remainingFiles": stats["remainingFiles"].clone(),
+                        "remainingDirs": stats["remainingDirs"].clone(),
+                        "freeSpaceGb": stats["freeSpaceGb"].clone(),
+                        "wholeSpaceGb": stats["wholeSpaceGb"].clone(),
+                        "spacePercent": stats["spacePercent"].clone(),
+                        "statusError": stats["statusError"].clone()
                     })
                 })
                 .collect();
@@ -233,6 +739,14 @@ async fn api_status(state: web::Data<AppState>) -> HttpResponse {
     HttpResponse::Ok()
         .content_type("application/json")
         .body(status.to_string())
+}
+
+#[get("/ssh-hosts")]
+async fn api_ssh_hosts() -> HttpResponse {
+    let hosts = read_ssh_config_hosts_with_debug(true);
+    HttpResponse::Ok()
+        .content_type("application/json")
+        .body(serde_json::json!({ "hosts": hosts }).to_string())
 }
 
 #[derive(serde::Deserialize)]
@@ -491,7 +1005,7 @@ async fn validator(
 
     // Allow login if username matches and password matches OR no password was provided (debug-friendly)
     let user_ok = credentials.user_id().eq(&settings_login);
-    let pass_ok = credentials.password().map(|p| p == settings_passw).unwrap_or(true);
+    let pass_ok = credentials.password().map(|p| p == settings_passw).unwrap_or(false);
     if user_ok && pass_ok {
         Ok(req)
     } else {
@@ -530,6 +1044,7 @@ async fn main() -> std::io::Result<()> {
             .service(
                 web::scope("/api")
                     .service(api_status)
+                    .service(api_ssh_hosts)
                     .service(api_update_config)
                     .service(api_create_group)
                     .service(api_update_group)
@@ -812,7 +1327,7 @@ fn run_config_job(state: AppState) {
         }
         
         if !running {
-            std::thread::sleep(Duration::from_secs(2));
+            wait_with_config_interrupt(&state, 2);
             continue;
         }
         
@@ -831,9 +1346,11 @@ fn run_config_job(state: AppState) {
         let mut formatted_message = String::new();
         
         for group in config["groups"].as_array().unwrap() {
-            let group_name = group["name"].as_str().unwrap_or("Unnamed");
             for endpoint in group["endpoints"].as_array().unwrap() {
                 let name = endpoint["name"].as_str().unwrap();
+                let endpoint_type = endpoint_type(endpoint);
+                let host = endpoint_host(endpoint);
+                let endpoint_name = endpoint_label(name, endpoint_type, host);
                 let path = endpoint["path"].as_str().unwrap();
                 let max_count = endpoint["count"].as_i64().unwrap();
                 let is_enabled = endpoint["enabled"].as_bool().unwrap();
@@ -848,52 +1365,68 @@ fn run_config_job(state: AppState) {
 
                 if is_enabled {
                     enabled_count += 1;
-                    let files = match fs::read_dir(path) {
-                        Ok(dir) => dir,
-                        Err(_) => {
-                            println!("Endpoint: {}\nThere isn't such directory: {}", name, path);
-                            continue;
-                        }
-                    };
-                    let file_count = files.count();
-
-                    if file_count > max_count.try_into().unwrap() {
-                        match delete_old_files(path, max_count, &filter, name) {
+                    if endpoint_type == "ssh" {
+                        match delete_old_files_over_ssh(host, path, max_count, &filter, &endpoint_name) {
                             Ok(msg) => {
+                                println!("{}", msg);
                                 message.push_str(&msg);
+                                message.push('\n');
                             }
-                            Err(e) => println!("Error deleting old files: {}", e),
+                            Err(err) => println!(
+                                "Endpoint: {}\nFailed to clean remote path {} on host {}: {}",
+                                endpoint_name,
+                                path,
+                                host,
+                                err
+                            ),
                         }
                     } else {
-                        let mut free_space_str = String::new();
-                        let mut whole_space_str = String::new();
-                        let mut whole_space_gb = 0;
-                        let mut free_space_gb = 0;
-                        let space_percent: f64;
-
-                        match get_whole_space(path) {
-                            Some(whole_space) => {
-                                whole_space_gb = whole_space / 1_000_000_000;
-                                whole_space_str = format!("{} GB", whole_space_gb);
+                        let files = match fs::read_dir(path) {
+                            Ok(dir) => dir,
+                            Err(_) => {
+                                println!("Endpoint: {}\nThere isn't such directory: {}", endpoint_name, path);
+                                continue;
                             }
-                            None => println!("Failed to get free space on {}", path),
-                        }
+                        };
+                        let file_count = files.count();
 
-                        match get_free_space(path) {
-                            Some(free_space) => {
-                                free_space_gb = free_space / 1_000_000_000;
-                                free_space_str = format!("{} GB", free_space_gb);
+                        if file_count > max_count.try_into().unwrap() {
+                            match delete_old_files(path, max_count, &filter, &endpoint_name) {
+                                Ok(msg) => {
+                                    message.push_str(&msg);
+                                }
+                                Err(e) => println!("Error deleting old files: {}", e),
                             }
-                            None => println!("Failed to get free space on {}", path),
-                        }
+                        } else {
+                            let mut free_space_str = String::new();
+                            let mut whole_space_str = String::new();
+                            let mut whole_space_gb = 0;
+                            let mut free_space_gb = 0;
+                            let space_percent: f64;
 
-                        space_percent = (free_space_gb as f64 / whole_space_gb as f64 * 100.0).round();
-                        let timestamp = Local::now().format("%d-%m-%Y %H:%M:%S").to_string();
-                        formatted_message = format!(
+                            match get_whole_space(path) {
+                                Some(whole_space) => {
+                                    whole_space_gb = whole_space / 1_000_000_000;
+                                    whole_space_str = format!("{} GB", whole_space_gb);
+                                }
+                                None => println!("Failed to get free space on {}", path),
+                            }
+
+                            match get_free_space(path) {
+                                Some(free_space) => {
+                                    free_space_gb = free_space / 1_000_000_000;
+                                    free_space_str = format!("{} GB", free_space_gb);
+                                }
+                                None => println!("Failed to get free space on {}", path),
+                            }
+
+                            space_percent = (free_space_gb as f64 / whole_space_gb as f64 * 100.0).round();
+                            let timestamp = Local::now().format("%d-%m-%Y %H:%M:%S").to_string();
+                            formatted_message = format!(
 r#"====================================
 {timestamp}
 ===================================
-Endpoint: {name}
+Endpoint: {endpoint_name}
 Path: {path}
 Max count: {max_count}
 Files: {file_count}
@@ -902,9 +1435,10 @@ Nothing to delete ;)
 Free space: {free_space_str} ({space_percent}%)
 Total space: {whole_space_str}
 "#);
+                        }
+                        println!("{}", formatted_message);
+                        message += &formatted_message;
                     }
-                    println!("{}", formatted_message);
-                    message += &formatted_message;
                 }
             }
         }
@@ -916,7 +1450,7 @@ Total space: {whole_space_str}
         if enabled_count == 0 {
             println!("No enabled endpoints, waiting for config change...");
             running = false;
-            std::thread::sleep(Duration::from_secs(3));
+            wait_with_config_interrupt(&state, 3);
             continue;
         }
         
@@ -930,6 +1464,18 @@ Total space: {whole_space_str}
             .unwrap_or(default_period);
         
         println!("--- Next check in {}s ---", min_period);
-        std::thread::sleep(Duration::from_secs(min_period));
+        if wait_with_config_interrupt(&state, min_period) {
+            println!("*** Config changed during wait, applying new schedule... ***");
+        }
     }
+}
+
+fn wait_with_config_interrupt(state: &AppState, seconds: u64) -> bool {
+    for _ in 0..seconds {
+        std::thread::sleep(Duration::from_secs(1));
+        if state.was_updated() {
+            return true;
+        }
+    }
+    false
 }

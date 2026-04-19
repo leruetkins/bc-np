@@ -115,21 +115,30 @@
                 :key="ei"
                 class="endpoint-card"
                 :class="{ enabled: ep.enabled, disabled: !ep.enabled }"
-                draggable="true"
-                @dragstart="dragEndpoint($event, gi, ei)"
               >
-                <div class="ep-header">
-                  <h4>{{ ep.name }}</h4>
+                <div class="ep-header" draggable="true" @dragstart="dragEndpoint($event, gi, ei)">
+                  <div class="ep-title">
+                    <span class="drag-handle" title="Drag endpoint">⋮⋮</span>
+                    <h4>{{ ep.name }}</h4>
+                  </div>
                   <span class="status-badge" :class="ep.enabled ? 'active' : 'inactive'">
                     {{ ep.enabled ? 'Active' : 'Inactive' }}
                   </span>
                 </div>
-                <p class="path">{{ ep.path }}</p>
+                <p class="path">{{ endpointSummary(ep) }}</p>
                 <div class="ep-stats">
-                  <span><span class="label">Files:</span> {{ ep.fileCount || 0 }} / {{ ep.count }}</span>
+                  <span><span class="label">Type:</span> {{ ep.type || 'local' }}</span>
+                  <span v-if="ep.type === 'ssh'"><span class="label">Host:</span> {{ ep.host || '-' }}</span>
+                  <span><span class="label">Files:</span> {{ ep.fileCount ?? 0 }} / {{ ep.count }}</span>
                   <span><span class="label">Period:</span> {{ ep.period || 15 }}s</span>
-                  <span><span class="label">Space:</span> {{ ep.freeSpaceGb || 0 }} / {{ ep.wholeSpaceGb || 0 }} GB</span>
+                  <span v-if="ep.freeSpaceGb != null && ep.wholeSpaceGb != null">
+                    <span class="label">Space:</span> {{ ep.freeSpaceGb }} / {{ ep.wholeSpaceGb }} GB
+                  </span>
                 </div>
+                <p v-if="ep.remainingFiles != null || ep.remainingDirs != null" class="filter">
+                  Remaining: files {{ ep.remainingFiles ?? ep.fileCount ?? 0 }}, folders {{ ep.remainingDirs ?? 0 }}
+                </p>
+                <p v-if="ep.statusError" class="filter">Status error: {{ ep.statusError }}</p>
                 <p class="filter">Filter: {{ ep.filter?.join(', ') || 'none' }}</p>
                 <div class="actions">
                   <button class="btn btn-sm" :class="ep.enabled ? 'btn-warning' : 'btn-success'" @click="toggleEndpoint(gi, ei)">
@@ -192,7 +201,21 @@
             <input v-model="endpointForm.name" required>
           </div>
           <div class="form-group">
-            <label>Path</label>
+            <label>Type</label>
+            <select v-model="endpointForm.type">
+              <option value="local">Local path</option>
+              <option value="ssh">SSH host</option>
+            </select>
+          </div>
+          <div v-if="endpointForm.type === 'ssh'" class="form-group">
+            <label>SSH Host</label>
+            <select v-model="endpointForm.host" required>
+              <option disabled value="">Select host from SSH config</option>
+              <option v-for="host in sshHostOptions" :key="host" :value="host">{{ host }}</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>{{ endpointForm.type === 'ssh' ? 'Remote Path' : 'Path' }}</label>
             <input v-model="endpointForm.path" required>
           </div>
           <div class="form-group">
@@ -233,7 +256,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 
 const isAuthenticated = ref(false)
 const isDark = ref(false)
@@ -243,12 +266,13 @@ const config = ref({ groups: [] })
 const showModal = ref(false)
 const modalTitle = ref('')
 const loginError = ref('')
+const sshHosts = ref([])
 
 const loginForm = reactive({ login: '', password: '' })
 const settingsForm = reactive({ name: '', place: '', description: '' })
 const passwordForm = reactive({ login: '', password: '' })
 const endpointForm = reactive({
-  name: '', path: '', count: 10, period: 15, filter: '', enabled: true
+  name: '', type: 'local', host: '', path: '', count: 10, period: 15, filter: '', enabled: true
 })
 
 const editingGroupIndex = ref(-1)
@@ -256,6 +280,7 @@ const editingEndpointIndex = ref(-1)
 const dragOverIndex = ref(-1)
 let draggedFromGroup = -1
 let draggedFromEndpoint = -1
+let statusRefreshTimer = null
 
 const showGroupModal = ref(false)
 const groupForm = reactive({ name: '' })
@@ -278,6 +303,14 @@ const totalCount = computed(() => {
     count += g.endpoints?.length || 0
   })
   return count
+})
+
+const sshHostOptions = computed(() => {
+  const hosts = [...sshHosts.value]
+  if (endpointForm.host && !hosts.includes(endpointForm.host)) {
+    hosts.unshift(endpointForm.host)
+  }
+  return hosts
 })
 
 async function apiCall(url, method = 'GET', body = null) {
@@ -303,12 +336,15 @@ function handleLogin() {
   isAuthenticated.value = true
   loadStatus()
   loadConfig()
+  loadSshHosts()
+  startStatusRefresh()
 }
 
 function logout() {
   localStorage.removeItem('credentials')
   isAuthenticated.value = false
   currentSection.value = 'dashboard'
+  stopStatusRefresh()
 }
 
 function toggleTheme() {
@@ -324,7 +360,10 @@ function toggleTheme() {
 
 async function loadStatus() {
   const data = await apiCall('/api/status')
-  if (data) status.value = data
+  if (data) {
+    status.value = data
+    mergeStatusIntoConfig(data)
+  }
 }
 
 async function loadConfig() {
@@ -336,6 +375,53 @@ async function loadConfig() {
       settingsForm.place = data.node.place || ''
       settingsForm.description = data.node.description || ''
     }
+    mergeStatusIntoConfig(status.value)
+  }
+}
+
+function mergeStatusIntoConfig(statusData) {
+  if (!statusData?.groups || !config.value?.groups) return
+
+  statusData.groups.forEach((statusGroup, gi) => {
+    const configGroup = config.value.groups?.[gi]
+    if (!configGroup?.endpoints) return
+
+    statusGroup.endpoints?.forEach((statusEndpoint, ei) => {
+      const configEndpoint = configGroup.endpoints?.[ei]
+      if (!configEndpoint) return
+
+      configEndpoint.path = statusEndpoint.path ?? configEndpoint.path
+      configEndpoint.fileCount = statusEndpoint.fileCount
+      configEndpoint.remainingFiles = statusEndpoint.remainingFiles
+      configEndpoint.remainingDirs = statusEndpoint.remainingDirs
+      configEndpoint.freeSpaceGb = statusEndpoint.freeSpaceGb
+      configEndpoint.wholeSpaceGb = statusEndpoint.wholeSpaceGb
+      configEndpoint.spacePercent = statusEndpoint.spacePercent
+      configEndpoint.statusError = statusEndpoint.statusError
+    })
+  })
+}
+
+function startStatusRefresh() {
+  stopStatusRefresh()
+  statusRefreshTimer = window.setInterval(() => {
+    if (isAuthenticated.value) {
+      loadStatus()
+    }
+  }, 10000)
+}
+
+function stopStatusRefresh() {
+  if (statusRefreshTimer !== null) {
+    window.clearInterval(statusRefreshTimer)
+    statusRefreshTimer = null
+  }
+}
+
+async function loadSshHosts() {
+  const data = await apiCall('/api/ssh-hosts')
+  if (data?.hosts) {
+    sshHosts.value = data.hosts
   }
 }
 
@@ -383,7 +469,7 @@ function showAddEndpointForm(gi) {
   editingGroupIndex.value = gi
   editingEndpointIndex.value = -1
   modalTitle.value = 'Add Endpoint'
-  Object.assign(endpointForm, { name: '', path: '', count: 10, period: 15, filter: '', enabled: true })
+  Object.assign(endpointForm, { name: '', type: 'local', host: '', path: '', count: 10, period: 15, filter: '', enabled: true })
   showModal.value = true
 }
 
@@ -394,6 +480,8 @@ function editEndpointForm(gi, ei) {
   modalTitle.value = 'Edit Endpoint'
   Object.assign(endpointForm, {
     name: ep.name,
+    type: ep.type || 'local',
+    host: ep.host || '',
     path: ep.path,
     count: ep.count,
     period: ep.period || 15,
@@ -410,6 +498,8 @@ function closeModal() {
 function saveEndpoint() {
   const endpoint = {
     name: endpointForm.name,
+    type: endpointForm.type || 'local',
+    host: endpointForm.type === 'ssh' ? endpointForm.host.trim() : '',
     path: endpointForm.path,
     count: endpointForm.count,
     period: endpointForm.period,
@@ -425,6 +515,13 @@ function saveEndpoint() {
 
   closeModal()
   saveConfig()
+}
+
+function endpointSummary(ep) {
+  if (ep.type === 'ssh') {
+    return `${ep.host || 'ssh-host'}:${ep.path}`
+  }
+  return ep.path
 }
 
 async function toggleEndpoint(gi, ei) {
@@ -535,6 +632,12 @@ onMounted(() => {
     isAuthenticated.value = true
     loadStatus()
     loadConfig()
+    loadSshHosts()
+    startStatusRefresh()
   }
+})
+
+onUnmounted(() => {
+  stopStatusRefresh()
 })
 </script>
